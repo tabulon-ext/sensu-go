@@ -338,5 +338,5 @@ message CheckHistory {
     // point in time. Comparing this value to the current flapping status allows
     // filters to trigger only on start and end of flapping. NB! This has been
     // disabled for 5.x releases.
-    bool flapping = 3 [(gogoproto.jsontag) = "-"];
+    bool flapping = 3 [(gogoproto.jsontag) = "flapping"];
 }
