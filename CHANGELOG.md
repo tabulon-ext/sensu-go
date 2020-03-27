@@ -6,6 +6,7 @@ and this project adheres to [Semantic
 Versioning](http://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
+- Added ability to make the Resty HTTP Timeout configurable.
 
 ### Added
 - The `sensu.io/managed_by` label is now automatically applied to resources
