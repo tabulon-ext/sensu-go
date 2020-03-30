@@ -8,6 +8,11 @@ Versioning](http://semver.org/spec/v2.0.0.html).
 ## Unreleased
 - Added ability to make the Resty HTTP Timeout configurable.
 
+### Fixed
+- Keepalives can now be published via the HTTP API.
+
+## [5.19.0] - 2020-03-26
+
 ### Added
 - The `sensu.io/managed_by` label is now automatically applied to resources
 created via `sensuctl create`.
