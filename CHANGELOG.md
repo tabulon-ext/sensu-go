@@ -9,6 +9,8 @@ Versioning](http://semver.org/spec/v2.0.0.html).
 - Added ability to make the Resty HTTP Timeout configurable.
 
 ### Fixed
+- The config file default path is now shown in the help for sensu-backend start
+and sensu-agent start.
 - Keepalives can now be published via the HTTP API.
 
 ## [5.19.0] - 2020-03-26
