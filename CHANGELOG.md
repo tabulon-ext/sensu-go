@@ -26,6 +26,7 @@ a decimal multiplier value.
 agent processed a particular event.
 - Added `core/v2.Pipeline` resource for configuring Pipeline resources.
 - Added `pipelines` field to `Check` and `CheckConfig`
+- Added `core/v3.Pipeline` resource for configuring Pipeline resources.
 
 ### Changed
 - When deleting resource with sensuctl, the resource type will now be displayed
