@@ -5,7 +5,7 @@ import (
 	"os"
 	"time"
 
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	corev2 "github.com/sensu/core/v2"
 	"github.com/sensu/sensu-go/asset"
 	"golang.org/x/time/rate"
 )
@@ -14,10 +14,6 @@ const (
 	// MaxMessageBufferSize specifies the maximum number of messages of a given
 	// type that an agent will queue before rejecting messages.
 	MaxMessageBufferSize = 10
-
-	// TCPSocketReadDeadline specifies the maximum time the TCP socket will wait
-	// to receive data.
-	TCPSocketReadDeadline = 5000 * time.Millisecond
 
 	// DefaultAPIHost specifies the default API Host
 	DefaultAPIHost = "127.0.0.1"
@@ -45,12 +41,6 @@ const (
 
 	// DefaultPassword specifies the default password
 	DefaultPassword = "P@ssw0rd!"
-
-	// DefaultSocketHost specifies the default socket host
-	DefaultSocketHost = "127.0.0.1"
-
-	// DefaultSocketPort specifies the default socket port
-	DefaultSocketPort = 3030
 
 	// DefaultStatsdDisable specifies if the statsd listener is disabled
 	DefaultStatsdDisable = false
@@ -115,9 +105,6 @@ type Config struct {
 	// in check execution.
 	DisableAssets bool
 
-	// DisableSockets disables the event sockets
-	DisableSockets bool
-
 	// EventsAPIRateLimit is the maximum number of events per second that will
 	// be transmitted to the backend from the events API
 	EventsAPIRateLimit rate.Limit
@@ -142,6 +129,15 @@ type Config struct {
 	// by the backend to create a critical event.
 	KeepaliveCriticalTimeout uint32
 
+	// KeepaliveCheckLabels are key-value pairs that users can provide to keepalive events
+	KeepaliveCheckLabels map[string]string
+
+	// KeepaliveCheckAnnotations are key-value pairs that users can provide to keepalive events
+	KeepaliveCheckAnnotations map[string]string
+
+	// KeepalivePipelines contain pipelines for agent's keepalive events
+	KeepalivePipelines []string
+
 	// Labels are key-value pairs that users can provide to agent entities
 	Labels map[string]string
 
@@ -156,9 +152,6 @@ type Config struct {
 
 	// Redact contains the fields to redact when marshalling the agent's entity
 	Redact []string
-
-	// Socket contains the Sensu client socket configuration
-	Socket *SocketConfig
 
 	// StatsdServer contains the statsd server configuration
 	StatsdServer *StatsdServerConfig
@@ -210,6 +203,14 @@ type Config struct {
 	// RetryMultiplier is multiplied with the current retry delay to produce
 	// a longer retry delay. It is bounded by RetryMax.
 	RetryMultiplier float64
+
+	// MaxSessionLength is the maximum duration after which the agent will
+	// reconnect to one of the backends.
+	MaxSessionLength time.Duration
+
+	// StripNetworks is a boolean to specify if we need to strip network
+	// information from the agent entity state
+	StripNetworks bool
 }
 
 // StatsdServerConfig contains the statsd server configuration
@@ -219,12 +220,6 @@ type StatsdServerConfig struct {
 	FlushInterval int
 	Handlers      []string
 	Disable       bool
-}
-
-// SocketConfig contains the Socket configuration
-type SocketConfig struct {
-	Host string
-	Port int
 }
 
 // FixtureConfig provides a new Config object initialized with defaults for use
@@ -251,10 +246,6 @@ func FixtureConfig() (*Config, func()) {
 		KeepaliveWarningTimeout: corev2.DefaultKeepaliveTimeout,
 		Namespace:               DefaultNamespace,
 		Password:                DefaultPassword,
-		Socket: &SocketConfig{
-			Host: DefaultSocketHost,
-			Port: DefaultSocketPort,
-		},
 		StatsdServer: &StatsdServerConfig{
 			Host:          DefaultStatsdMetricsHost,
 			Port:          DefaultStatsdMetricsPort,
@@ -275,7 +266,6 @@ func FixtureConfig() (*Config, func()) {
 func NewConfig() *Config {
 	c := &Config{
 		API:          &APIConfig{},
-		Socket:       &SocketConfig{},
 		StatsdServer: &StatsdServerConfig{},
 	}
 	return c

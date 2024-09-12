@@ -5,10 +5,10 @@ import (
 	"reflect"
 	"testing"
 
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	corev2 "github.com/sensu/core/v2"
 	"github.com/sensu/sensu-go/backend/authorization"
 	"github.com/sensu/sensu-go/backend/authorization/rbac"
-	"github.com/sensu/sensu-go/backend/store"
+	storev2 "github.com/sensu/sensu-go/backend/store/v2"
 	"github.com/sensu/sensu-go/testing/mockstore"
 	"github.com/stretchr/testify/mock"
 )
@@ -19,7 +19,7 @@ func TestListHookConfigs(t *testing.T) {
 	tests := []struct {
 		Name   string
 		Ctx    func() context.Context
-		Store  func() store.Store
+		Store  func() storev2.Interface
 		Auth   func() authorization.Authorizer
 		Exp    []*corev2.HookConfig
 		ExpErr bool
@@ -27,8 +27,8 @@ func TestListHookConfigs(t *testing.T) {
 		{
 			Name: "no auth",
 			Ctx:  defaultContext,
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -41,8 +41,8 @@ func TestListHookConfigs(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -66,8 +66,8 @@ func TestListHookConfigs(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -91,12 +91,11 @@ func TestListHookConfigs(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "legit", nil)
 			},
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
-				store.On("ListResources", mock.Anything, (&corev2.HookConfig{}).StorePrefix(), mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
-					arg := args.Get(2).(*[]*corev2.HookConfig)
-					*arg = []*corev2.HookConfig{defaultHookConfig}
-				}).Return(nil)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
+				cs := new(mockstore.ConfigStore)
+				store.On("GetConfigStore").Return(cs)
+				cs.On("List", mock.Anything, mock.Anything, mock.Anything).Return(mockstore.WrapList[*corev2.HookConfig]{defaultHookConfig}, nil)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -141,7 +140,7 @@ func TestGetHookConfig(t *testing.T) {
 	tests := []struct {
 		Name   string
 		Ctx    func() context.Context
-		Store  func() store.Store
+		Store  func() storev2.Interface
 		Auth   func() authorization.Authorizer
 		Exp    *corev2.HookConfig
 		ExpErr bool
@@ -149,8 +148,8 @@ func TestGetHookConfig(t *testing.T) {
 		{
 			Name: "no auth",
 			Ctx:  defaultContext,
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -163,8 +162,8 @@ func TestGetHookConfig(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -189,8 +188,8 @@ func TestGetHookConfig(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -215,12 +214,11 @@ func TestGetHookConfig(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "legit", nil)
 			},
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
-				store.On("GetResource", mock.Anything, "default", mock.Anything).Run(func(args mock.Arguments) {
-					arg := args.Get(2).(*corev2.HookConfig)
-					*arg = *defaultHookConfig
-				}).Return(nil)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
+				cs := new(mockstore.ConfigStore)
+				store.On("GetConfigStore").Return(cs)
+				cs.On("Get", mock.Anything, mock.Anything).Return(mockstore.Wrapper[*corev2.HookConfig]{Value: defaultHookConfig}, nil)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -266,15 +264,15 @@ func TestCreateHookConfig(t *testing.T) {
 	tests := []struct {
 		Name   string
 		Ctx    func() context.Context
-		Store  func() store.Store
+		Store  func() storev2.Interface
 		Auth   func() authorization.Authorizer
 		ExpErr bool
 	}{
 		{
 			Name: "no auth",
 			Ctx:  defaultContext,
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -287,8 +285,8 @@ func TestCreateHookConfig(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -313,8 +311,8 @@ func TestCreateHookConfig(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -339,9 +337,11 @@ func TestCreateHookConfig(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "legit", nil)
 			},
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
-				store.On("CreateResource", mock.Anything, defaultHookConfig).Return(nil)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
+				cs := new(mockstore.ConfigStore)
+				store.On("GetConfigStore").Return(cs)
+				cs.On("CreateIfNotExists", mock.Anything, mock.Anything, mock.Anything).Return(nil)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -383,15 +383,15 @@ func TestUpdateHookConfig(t *testing.T) {
 	tests := []struct {
 		Name   string
 		Ctx    func() context.Context
-		Store  func() store.Store
+		Store  func() storev2.Interface
 		Auth   func() authorization.Authorizer
 		ExpErr bool
 	}{
 		{
 			Name: "no auth",
 			Ctx:  defaultContext,
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -404,8 +404,8 @@ func TestUpdateHookConfig(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -430,8 +430,8 @@ func TestUpdateHookConfig(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -456,9 +456,11 @@ func TestUpdateHookConfig(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "legit", nil)
 			},
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
-				store.On("CreateOrUpdateResource", mock.Anything, defaultHookConfig).Return(nil)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
+				cs := new(mockstore.ConfigStore)
+				store.On("GetConfigStore").Return(cs)
+				cs.On("CreateOrUpdate", mock.Anything, mock.Anything, mock.Anything).Return(nil)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -500,7 +502,7 @@ func TestDeleteHookConfig(t *testing.T) {
 	tests := []struct {
 		Name   string
 		Ctx    func() context.Context
-		Store  func() store.Store
+		Store  func() storev2.Interface
 		Auth   func() authorization.Authorizer
 		Exp    *corev2.HookConfig
 		ExpErr bool
@@ -508,8 +510,8 @@ func TestDeleteHookConfig(t *testing.T) {
 		{
 			Name: "no auth",
 			Ctx:  defaultContext,
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -522,8 +524,8 @@ func TestDeleteHookConfig(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -548,8 +550,8 @@ func TestDeleteHookConfig(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -574,9 +576,11 @@ func TestDeleteHookConfig(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "legit", nil)
 			},
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
-				store.On("DeleteResource", mock.Anything, "hooks", "default").Return(nil)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
+				cs := new(mockstore.ConfigStore)
+				store.On("GetConfigStore").Return(cs)
+				cs.On("Delete", mock.Anything, mock.Anything).Return(nil)
 				return store
 			},
 			Auth: func() authorization.Authorizer {

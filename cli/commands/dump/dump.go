@@ -6,10 +6,9 @@ import (
 	"io"
 	"net/url"
 	"os"
-	"reflect"
 
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
-	corev3 "github.com/sensu/sensu-go/api/core/v3"
+	corev2 "github.com/sensu/core/v2"
+	corev3 "github.com/sensu/core/v3"
 	"github.com/sensu/sensu-go/backend/apid/actions"
 	"github.com/sensu/sensu-go/cli"
 	"github.com/sensu/sensu-go/cli/client"
@@ -17,8 +16,7 @@ import (
 	"github.com/sensu/sensu-go/cli/commands/flags"
 	"github.com/sensu/sensu-go/cli/commands/helpers"
 	"github.com/sensu/sensu-go/cli/resource"
-	"github.com/sensu/sensu-go/types"
-	"github.com/sensu/sensu-go/types/compat"
+	"github.com/sensu/core/v3/types"
 	"github.com/spf13/cobra"
 )
 
@@ -51,10 +49,10 @@ func Command(cli *cli.SensuCli) *cobra.Command {
 
 	helpers.AddAllNamespace(cmd.Flags())
 	format := cli.Config.Format()
-	if format != config.FormatWrappedJSON && format != config.FormatYAML {
+	if format != config.FormatJSON && format != config.FormatYAML {
 		format = config.FormatYAML
 	}
-	_ = cmd.Flags().String("format", format, fmt.Sprintf(`format of data returned ("%s"|"%s")`, config.FormatWrappedJSON, config.FormatYAML))
+	_ = cmd.Flags().String("format", format, fmt.Sprintf(`format of data returned ("%s"|"%s")`, config.FormatJSON, config.FormatYAML))
 	_ = cmd.Flags().StringP("file", "f", "", "file to dump resources to")
 	_ = cmd.Flags().BoolP("types", "t", false, "list supported resource types")
 	_ = cmd.Flags().MarkDeprecated("types", `please use "sensuctl describe-type all" instead`)
@@ -70,7 +68,7 @@ func printAllTypes(cli *cli.SensuCli, cmd *cobra.Command) error {
 		typeNames = append(typeNames, fmt.Sprintf("%s.%s", wrapped.APIVersion, wrapped.Type))
 	}
 	switch getFormat(cli, cmd) {
-	case config.FormatJSON, config.FormatWrappedJSON:
+	case config.FormatJSON:
 		return helpers.PrintJSON(typeNames, cmd.OutOrStdout())
 	case config.FormatYAML:
 		return helpers.PrintYAML(typeNames, cmd.OutOrStdout())
@@ -112,7 +110,7 @@ func execute(cli *cli.SensuCli) func(*cobra.Command, []string) error {
 		}
 		format := getFormat(cli, cmd)
 		switch format {
-		case config.FormatYAML, config.FormatWrappedJSON:
+		case config.FormatYAML, config.FormatJSON:
 		default:
 			format = config.FormatYAML
 		}
@@ -158,21 +156,16 @@ func execute(cli *cli.SensuCli) func(*cobra.Command, []string) error {
 				return err
 			}
 			if ok {
-				req.SetNamespace(corev2.NamespaceTypeAll)
+				req.GetMetadata().Namespace = corev2.NamespaceTypeAll
 			} else {
-				req.SetNamespace(cli.Config.Namespace())
+				req.GetMetadata().Namespace = cli.Config.Namespace()
 			}
 
-			var val reflect.Value
-			if proxy, ok := req.(*corev3.V2ResourceProxy); ok {
-				val = reflect.New(reflect.SliceOf(reflect.TypeOf(proxy.Resource)))
-			} else {
-				val = reflect.New(reflect.SliceOf(reflect.TypeOf(req)))
-			}
+			var wrappers []types.Wrapper
 
 			err = cli.Client.List(
 				fmt.Sprintf("%s?types=%s", req.URIPath(), url.QueryEscape(types.WrapResource(req).Type)),
-				val.Interface(), &client.ListOptions{
+				&wrappers, &client.ListOptions{
 					ChunkSize: ChunkSize,
 				}, nil)
 			if err != nil {
@@ -188,21 +181,18 @@ func execute(cli *cli.SensuCli) func(*cobra.Command, []string) error {
 				return fmt.Errorf("API error: %s", err)
 			}
 
-			val = reflect.Indirect(val)
-			if val.Len() == 0 {
+			if len(wrappers) == 0 {
 				continue
 			}
 
-			resources := make([]corev2.Resource, val.Len())
+			resources := make([]corev3.Resource, len(wrappers))
 			for i := range resources {
-				resources[i] = compat.V2Resource(val.Index(i).Interface())
+				resources[i] = wrappers[i].Value.(corev3.Resource)
 			}
 
 			switch format {
 			case config.FormatJSON:
-				err = helpers.PrintJSON(resources, w)
-			case config.FormatWrappedJSON:
-				err = helpers.PrintWrappedJSONList(resources, w)
+				err = helpers.PrintResourceListJSON(resources, w)
 			case config.FormatYAML:
 				if i > 0 {
 					_, _ = fmt.Fprintln(w, "---")

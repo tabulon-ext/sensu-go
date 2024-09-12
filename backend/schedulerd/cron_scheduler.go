@@ -2,36 +2,30 @@ package schedulerd
 
 import (
 	"context"
+	"sync"
 
-	"github.com/sensu/sensu-go/backend/messaging"
-	"github.com/sensu/sensu-go/backend/secrets"
-	"github.com/sensu/sensu-go/backend/store"
-	cachev2 "github.com/sensu/sensu-go/backend/store/cache/v2"
 	"github.com/sirupsen/logrus"
 
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	corev2 "github.com/sensu/core/v2"
 )
 
 // CronScheduler schedules checks to be executed on a cron schedule.
 type CronScheduler struct {
-	lastCronState          string
-	check                  *corev2.CheckConfig
-	store                  store.Store
-	bus                    messaging.MessageBus
-	logger                 *logrus.Entry
-	ctx                    context.Context
-	cancel                 context.CancelFunc
-	interrupt              chan *corev2.CheckConfig
-	entityCache            *cachev2.Resource
-	secretsProviderManager *secrets.ProviderManager
+	lastCronState string
+	check         *corev2.CheckConfig
+	executor      *CheckExecutor
+	logger        *logrus.Entry
+	ctx           context.Context
+	cancel        context.CancelFunc
+	interrupt     chan *corev2.CheckConfig
+	stopWg        sync.WaitGroup
 }
 
 // NewCronScheduler initializes a CronScheduler
-func NewCronScheduler(ctx context.Context, store store.Store, bus messaging.MessageBus, check *corev2.CheckConfig, cache *cachev2.Resource, secretsProviderManager *secrets.ProviderManager) *CronScheduler {
+func NewCronScheduler(ctx context.Context, check *corev2.CheckConfig, executor *CheckExecutor) *CronScheduler {
 	sched := &CronScheduler{
-		store:         store,
-		bus:           bus,
 		check:         check,
+		executor:      executor,
 		lastCronState: check.Cron,
 		interrupt:     make(chan *corev2.CheckConfig),
 		logger: logger.WithFields(logrus.Fields{
@@ -39,8 +33,6 @@ func NewCronScheduler(ctx context.Context, store store.Store, bus messaging.Mess
 			"namespace":      check.Namespace,
 			"scheduler_type": CronType.String(),
 		}),
-		entityCache:            cache,
-		secretsProviderManager: secretsProviderManager,
 	}
 	sched.ctx, sched.cancel = context.WithCancel(ctx)
 	sched.ctx = corev2.SetContextFromResource(sched.ctx, check)
@@ -65,13 +57,14 @@ func (s *CronScheduler) schedule(timer *CronTimer, executor *CheckExecutor) {
 // Start starts the cron scheduler.
 func (s *CronScheduler) Start() {
 	cronCounter.WithLabelValues(s.check.Namespace).Inc()
+	s.stopWg.Add(1)
 	go s.start()
 }
 
 func (s *CronScheduler) start() {
+	defer s.stopWg.Done()
 	s.logger.Info("starting new cron scheduler")
 	timer := NewCronTimer(s.check.Name, s.check.Cron)
-	executor := NewCheckExecutor(s.bus, s.check.Namespace, s.store, s.entityCache, s.secretsProviderManager)
 	timer.Start()
 
 	for {
@@ -90,7 +83,7 @@ func (s *CronScheduler) start() {
 			continue
 		case <-timer.C():
 		}
-		s.schedule(timer, executor)
+		s.schedule(timer, s.executor)
 	}
 }
 
@@ -101,9 +94,10 @@ func (s *CronScheduler) Interrupt(check *corev2.CheckConfig) {
 
 // Stop stops the cron scheduler.
 func (s *CronScheduler) Stop() error {
-	cronCounter.WithLabelValues(s.check.Namespace).Dec()
 	logger.Info("stopping cron scheduler")
 	s.cancel()
+	s.stopWg.Wait()
+	cronCounter.WithLabelValues(s.check.Namespace).Dec()
 
 	return nil
 }

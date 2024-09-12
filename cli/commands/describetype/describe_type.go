@@ -6,13 +6,13 @@ import (
 	"io"
 	"strconv"
 
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	corev3 "github.com/sensu/core/v3"
 	"github.com/sensu/sensu-go/cli"
 	"github.com/sensu/sensu-go/cli/client/config"
 	"github.com/sensu/sensu-go/cli/commands/helpers"
 	"github.com/sensu/sensu-go/cli/elements/table"
 	"github.com/sensu/sensu-go/cli/resource"
-	"github.com/sensu/sensu-go/types"
+	"github.com/sensu/core/v3/types"
 	"github.com/spf13/cobra"
 )
 
@@ -46,7 +46,7 @@ func Command(cli *cli.SensuCli) *cobra.Command {
 	}
 
 	format := cli.Config.Format()
-	_ = cmd.Flags().StringP("format", "", format, fmt.Sprintf(`format of data returned ("%s"|"%s")`, config.FormatWrappedJSON, config.FormatYAML))
+	_ = cmd.Flags().StringP("format", "", format, fmt.Sprintf(`format of data returned ("%s"|"%s")`, config.FormatJSON, config.FormatYAML))
 
 	return cmd
 }
@@ -70,7 +70,7 @@ func execute(cli *cli.SensuCli) func(*cobra.Command, []string) error {
 
 			// Short names are only supported for core/v2 resources
 			shortName := ""
-			if wrapped.APIVersion == "core/v2" {
+			if wrapped.APIVersion == "core/v2" || wrapped.APIVersion == "core/v3" {
 				shortName = resource.RBACName()
 			}
 
@@ -84,7 +84,7 @@ func execute(cli *cli.SensuCli) func(*cobra.Command, []string) error {
 			resources = append(resources, r)
 		}
 		switch getFormat(cli, cmd) {
-		case config.FormatJSON, config.FormatWrappedJSON:
+		case config.FormatJSON:
 			return helpers.PrintJSON(resources, cmd.OutOrStdout())
 		case config.FormatYAML:
 			return helpers.PrintYAML(resources, cmd.OutOrStdout())
@@ -107,9 +107,12 @@ func getFormat(cli *cli.SensuCli, cmd *cobra.Command) string {
 // isNamespaced is a hack to determine whether a resource is global or
 // namespaced, by relying on the SetNamespace method, which is a no-op for
 // global resources, and inspecting the resulting namespace
-func isNamespaced(r corev2.Resource) bool {
-	r.SetNamespace("~sensu")
-	return r.GetObjectMeta().Namespace == "~sensu"
+func isNamespaced(r corev3.Resource) bool {
+	gr, ok := r.(corev3.GlobalResource)
+	if !ok {
+		return true
+	}
+	return !gr.IsGlobalResource()
 }
 
 func printToTable(results interface{}, writer io.Writer) {

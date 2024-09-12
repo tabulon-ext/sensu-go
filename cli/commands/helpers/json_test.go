@@ -7,9 +7,11 @@ import (
 	"strings"
 	"testing"
 
+	v2 "github.com/sensu/core/v2"
+	corev3 "github.com/sensu/core/v3"
 	"github.com/sensu/sensu-go/cli/client/config"
 	"github.com/sensu/sensu-go/cli/elements/list"
-	"github.com/sensu/sensu-go/types"
+	"github.com/sensu/core/v3/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -18,8 +20,8 @@ func TestPrintJSON(t *testing.T) {
 	assert := assert.New(t)
 
 	testInput := map[string]string{
-		"commandLessThan": "echo foo >> output.txt",
-		"commandAnd":      "echo bar && exit 1",
+		"commandLessThan":	"echo foo >> output.txt",
+		"commandAnd":		"echo bar && exit 1",
 	}
 
 	buf := new(bytes.Buffer)
@@ -30,7 +32,7 @@ func TestPrintJSON(t *testing.T) {
 func TestPrintWrappedJSON(t *testing.T) {
 	assert := assert.New(t)
 
-	check := types.FixtureCheckConfig("check")
+	check := v2.FixtureCheckConfig("check")
 	check.Command = "echo foo >> output.txt"
 
 	w := types.WrapResource(check)
@@ -38,15 +40,15 @@ func TestPrintWrappedJSON(t *testing.T) {
 	assert.NoError(err)
 
 	buf := new(bytes.Buffer)
-	require.NoError(t, PrintWrappedJSON(check, buf))
+	require.NoError(t, PrintResourceJSON(check, buf))
 	assert.JSONEq(string(output), buf.String())
 }
 
-func TestPrintWrappedJSONList(t *testing.T) {
+func TestPrintResourceListJSON(t *testing.T) {
 	assert := assert.New(t)
 
-	check1 := types.FixtureCheckConfig("check1")
-	check2 := types.FixtureCheckConfig("check2")
+	check1 := v2.FixtureCheckConfig("check1")
+	check2 := v2.FixtureCheckConfig("check2")
 
 	w1 := types.WrapResource(check1)
 	w2 := types.WrapResource(check2)
@@ -58,7 +60,7 @@ func TestPrintWrappedJSONList(t *testing.T) {
 
 	buf := new(bytes.Buffer)
 
-	require.NoError(t, PrintWrappedJSONList([]types.Resource{check1, check2}, buf))
+	require.NoError(t, PrintResourceListJSON([]corev3.Resource{check1, check2}, buf))
 	// compare each string individually
 	output3 := strings.Split(buf.String(), "}\n{")
 	assert.JSONEq(string(output1), output3[0]+"}")
@@ -68,7 +70,7 @@ func TestPrintWrappedJSONList(t *testing.T) {
 func TestPrintFormatted(t *testing.T) {
 	assert := assert.New(t)
 
-	check := types.FixtureCheckConfig("check")
+	check := v2.FixtureCheckConfig("check")
 
 	w := types.WrapResource(check)
 
@@ -78,15 +80,6 @@ func TestPrintFormatted(t *testing.T) {
 
 	buf := new(bytes.Buffer)
 
-	require.NoError(t, PrintFormatted("", config.FormatWrappedJSON, check, buf, printToList))
-	assert.JSONEq(string(output), buf.String())
-
-	// test json format
-	output, err = json.Marshal(check)
-	assert.NoError(err)
-
-	buf = new(bytes.Buffer)
-
 	require.NoError(t, PrintFormatted("", config.FormatJSON, check, buf, printToList))
 	assert.JSONEq(string(output), buf.String())
 
@@ -94,21 +87,21 @@ func TestPrintFormatted(t *testing.T) {
 	buf = new(bytes.Buffer)
 
 	require.NoError(t, PrintFormatted("", config.FormatTabular, check, buf, printToList))
-	assert.Equal("=== \n", buf.String()) // empty table
+	assert.Equal("=== \n", buf.String())	// empty table
 
 	// test default format
 	buf = new(bytes.Buffer)
 
 	require.NoError(t, PrintFormatted("none", config.DefaultFormat, check, buf, printToList))
-	assert.Equal("=== \n", buf.String()) // empty table
+	assert.Equal("=== \n", buf.String())	// empty table
 
 	// test flag override (json format)
-	output, err = json.Marshal(check)
+	output, err = json.Marshal(types.WrapResource(check))
 	assert.NoError(err)
 
 	buf = new(bytes.Buffer)
 
-	require.NoError(t, PrintFormatted(config.FormatJSON, config.FormatWrappedJSON, check, buf, printToList))
+	require.NoError(t, PrintFormatted(config.FormatJSON, config.FormatYAML, check, buf, printToList))
 	assert.JSONEq(string(output), buf.String())
 }
 

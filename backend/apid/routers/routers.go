@@ -2,16 +2,17 @@ package routers
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"path"
 
 	"github.com/gorilla/mux"
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
-	corev3 "github.com/sensu/sensu-go/api/core/v3"
+	corev3 "github.com/sensu/core/v3"
+	"github.com/sensu/core/v3/types"
 	"github.com/sensu/sensu-go/backend/apid/actions"
+	"github.com/sensu/sensu-go/backend/apid/handlers"
 	"github.com/sensu/sensu-go/backend/store"
-	"github.com/sensu/sensu-go/types"
 )
 
 type errorBody struct {
@@ -20,30 +21,48 @@ type errorBody struct {
 }
 
 // RespondWith given writer and resource, marshal to JSON and write response.
-func RespondWith(w http.ResponseWriter, r *http.Request, resources interface{}) {
+func RespondWith(w http.ResponseWriter, r *http.Request, response handlers.HandlerResponse) {
 	// Set content-type to JSON
 	w.Header().Set("Content-Type", "application/json")
 
-	_, isCoreV2Resource := resources.(corev2.Resource)
-	_, isWrapper := resources.(types.Wrapper)
-	_, isV3Resource := resources.(corev3.Resource)
-	if isCoreV2Resource || isWrapper || isV3Resource {
-		etag, err := store.ETag(resources)
-		if err != nil {
-			logger.WithError(err).Error("failed to generate etag")
-			WriteError(w, err)
-		}
-		w.Header().Set("ETag", etag)
+	var etag string
+	if response.Resource != nil {
+		etag = response.Resource.GetMetadata().Annotations[store.SensuETagKey]
+	}
+
+	if etag != "" {
+		w.Header().Set("Etag", fmt.Sprintf("%q", etag))
 	}
 
 	// If no resource(s) are present return a 204 response code
-	if resources == nil {
+	if response.IsEmpty() {
 		if r.Method == http.MethodPost || r.Method == http.MethodPut {
-			w.WriteHeader(http.StatusCreated)
+			if info := response.TxInfo.Records; len(info) > 0 {
+				if info[0].Created {
+					w.WriteHeader(http.StatusCreated)
+				} else if info[0].Updated && info[0].ETag.Equals(info[0].PrevETag) {
+					w.WriteHeader(http.StatusNotModified)
+				}
+			} else {
+				w.WriteHeader(http.StatusCreated)
+			}
 		} else {
 			w.WriteHeader(http.StatusNoContent)
 		}
 		return
+	}
+
+	var resources interface{}
+	if response.Resource != nil {
+		resources = types.WrapResource(response.Resource)
+	} else if list := response.ResourceList; list != nil {
+		wrapList := make([]types.Wrapper, len(list))
+		for i := range list {
+			wrapList[i] = types.WrapResource(list[i])
+		}
+		resources = wrapList
+	} else if response.GraphQL != nil {
+		resources = response.GraphQL
 	}
 
 	// Marshal
@@ -119,31 +138,31 @@ func HTTPStatusFromCode(code actions.ErrCode) int {
 		return http.StatusPreconditionFailed
 	case actions.DeadlineExceeded:
 		return http.StatusGatewayTimeout
+	case actions.Gone:
+		return http.StatusGone
 	}
 
 	logger.WithField("code", code).Error("unknown error code")
 	return http.StatusInternalServerError
 }
 
-//
 // actionHandler takes a action handler closure and returns a new handler that
 // exexutes the closure and writes the response.
 //
 // Ex.
 //
-//   handler := actionHandler(func(r *http.Request) (interface{}, error) {
-//     msg := r.Vars("message")
-//     if msg == "i-am-a-jerk" {
-//       return nil, errors.New("fatal err")
-//     }
-//     return strings.Split(msg, "-"), nil
-//   })
-//   router.handleFunc("/echo/{message}", handler).Methods(http.MethodGet)
+//	handler := actionHandler(func(r *http.Request) (interface{}, error) {
+//	  msg := r.Vars("message")
+//	  if msg == "i-am-a-jerk" {
+//	    return nil, errors.New("fatal err")
+//	  }
+//	  return strings.Split(msg, "-"), nil
+//	})
+//	router.handleFunc("/echo/{message}", handler).Methods(http.MethodGet)
 //
-//    GET /echo/hey         --> 200 OK ["hey"]
-//    GET /echo/hey-there   --> 200 OK ["howdy", "there"]
-//    GET /echo/i-am-a-jerk --> 500    {code: 500, message: "fatal err"}
-//
+//	 GET /echo/hey         --> 200 OK ["hey"]
+//	 GET /echo/hey-there   --> 200 OK ["howdy", "there"]
+//	 GET /echo/i-am-a-jerk --> 500    {code: 500, message: "fatal err"}
 func actionHandler(action actionHandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		resources, err := action(r)
@@ -166,26 +185,24 @@ func listHandler(fn listHandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		RespondWith(w, r, resources)
+		RespondWith(w, r, handlers.HandlerResponse{ResourceList: resources})
 	}
 }
 
-type actionHandlerFunc func(r *http.Request) (interface{}, error)
+type actionHandlerFunc func(r *http.Request) (handlers.HandlerResponse, error)
 
-type listHandlerFunc func(w http.ResponseWriter, req *http.Request) (interface{}, error)
+type listHandlerFunc func(w http.ResponseWriter, req *http.Request) ([]corev3.Resource, error)
 
-//
 // ResourceRoute mounts resources in a convetional RESTful manner.
 //
-//   routes := ResourceRoute{PathPrefix: "checks", Router: ...}
-//   routes.Get(myShowAction)     // given action is mounted at GET /checks/:id
-//   routes.List(myIndexAction)   // given action is mounted at GET /checks
-//   routes.Put(myCreateAction)   // given action is mounted at PUT /checks/:id
-//   routes.Patch(myUpdateAction) // given action is mounted at PATCH /checks/:id
-//   routes.Post(myCreateAction)  // given action is mounted at POST /checks
-//   routes.Del(myCreateAction)   // given action is mounted at DELETE /checks/:id
-//   routes.Path("{id}/publish", publishAction).Methods(http.MethodDelete) // when you need something customer
-//
+//	routes := ResourceRoute{PathPrefix: "checks", Router: ...}
+//	routes.Get(myShowAction)     // given action is mounted at GET /checks/:id
+//	routes.List(myIndexAction)   // given action is mounted at GET /checks
+//	routes.Put(myCreateAction)   // given action is mounted at PUT /checks/:id
+//	routes.Patch(myUpdateAction) // given action is mounted at PATCH /checks/:id
+//	routes.Post(myCreateAction)  // given action is mounted at POST /checks
+//	routes.Del(myCreateAction)   // given action is mounted at DELETE /checks/:id
+//	routes.Path("{id}/publish", publishAction).Methods(http.MethodDelete) // when you need something customer
 type ResourceRoute struct {
 	Router     *mux.Router
 	PathPrefix string
@@ -198,12 +215,12 @@ func (r *ResourceRoute) Get(fn actionHandlerFunc) *mux.Route {
 
 // List resources
 func (r *ResourceRoute) List(fn ListControllerFunc, fields FieldsFunc) *mux.Route {
-	return r.Router.HandleFunc(r.PathPrefix, listerHandler(fn, fields)).Methods(http.MethodGet)
+	return r.Router.HandleFunc(r.PathPrefix, WrapList(fn, fields)).Methods(http.MethodGet)
 }
 
 // ListAllNamespaces return all resources across all namespaces
 func (r *ResourceRoute) ListAllNamespaces(fn ListControllerFunc, path string, fields FieldsFunc) *mux.Route {
-	return r.Router.HandleFunc(path, listerHandler(fn, fields)).Methods(http.MethodGet)
+	return r.Router.HandleFunc(path, WrapList(fn, fields)).Methods(http.MethodGet)
 }
 
 // Patch patches a resource
@@ -241,16 +258,4 @@ func (r *ResourceRoute) Path(p string, fn actionHandlerFunc) *mux.Route {
 
 func handleAction(router *mux.Router, path string, fn actionHandlerFunc) *mux.Route {
 	return router.HandleFunc(path, actionHandler(fn))
-}
-
-// UnmarshalBody decodes the request body
-func UnmarshalBody(req *http.Request, record interface{}) error {
-	err := json.NewDecoder(req.Body).Decode(&record)
-	if err != nil {
-		logger.WithError(err).Error("unable to read request body")
-		return err
-	}
-	// TODO: Support other types of requests other than JSON?
-
-	return nil
 }

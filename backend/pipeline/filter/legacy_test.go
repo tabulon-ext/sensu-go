@@ -5,13 +5,14 @@ import (
 	"testing"
 	"time"
 
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	corev2 "github.com/sensu/core/v2"
 	"github.com/sensu/sensu-go/asset"
 	"github.com/sensu/sensu-go/backend/api"
 	"github.com/sensu/sensu-go/backend/authorization/rbac"
 	"github.com/sensu/sensu-go/backend/store"
+	storev2 "github.com/sensu/sensu-go/backend/store/v2"
 	"github.com/sensu/sensu-go/testing/mockstore"
-	"github.com/sensu/sensu-go/types/dynamic"
+	"github.com/sensu/sensu-go/dynamic"
 	"github.com/stretchr/testify/mock"
 )
 
@@ -27,7 +28,7 @@ func TestLegacyAdapter_Name(t *testing.T) {
 func TestLegacyAdapter_CanFilter(t *testing.T) {
 	type fields struct {
 		AssetGetter  asset.Getter
-		Store        store.Store
+		Store        storev2.Interface
 		StoreTimeout time.Duration
 	}
 	type args struct {
@@ -111,7 +112,7 @@ func TestLegacyAdapter_CanFilter(t *testing.T) {
 func TestLegacyAdapter_Filter(t *testing.T) {
 	type fields struct {
 		AssetGetter  asset.Getter
-		Store        store.Store
+		Store        storev2.Interface
 		StoreTimeout time.Duration
 	}
 	type args struct {
@@ -149,10 +150,12 @@ func TestLegacyAdapter_Filter(t *testing.T) {
 			name: "allow filters deny events that do not match expression",
 			args: newArgs(),
 			fields: fields{
-				Store: func() store.Store {
+				Store: func() storev2.Interface {
 					filter := newFilter(corev2.EventFilterActionAllow, []string{`event.check.output == "unmatched"`})
-					stor := &mockstore.MockStore{}
-					stor.On("GetEventFilterByName", mock.Anything, filter.Name).Return(filter, nil)
+					stor := &mockstore.V2MockStore{}
+					cs := new(mockstore.ConfigStore)
+					stor.On("GetConfigStore").Return(cs)
+					cs.On("Get", mock.Anything, mock.Anything).Return(mockstore.Wrapper[*corev2.EventFilter]{Value: filter}, nil)
 					return stor
 				}(),
 			},
@@ -163,10 +166,12 @@ func TestLegacyAdapter_Filter(t *testing.T) {
 			name: "allow filters allow events that match expression",
 			args: newArgs(),
 			fields: fields{
-				Store: func() store.Store {
+				Store: func() storev2.Interface {
 					filter := newFilter(corev2.EventFilterActionAllow, []string{`event.check.output == "matched"`})
-					stor := &mockstore.MockStore{}
-					stor.On("GetEventFilterByName", mock.Anything, filter.Name).Return(filter, nil)
+					stor := &mockstore.V2MockStore{}
+					cs := new(mockstore.ConfigStore)
+					stor.On("GetConfigStore").Return(cs)
+					cs.On("Get", mock.Anything, mock.Anything).Return(mockstore.Wrapper[*corev2.EventFilter]{Value: filter}, nil)
 					return stor
 				}(),
 			},
@@ -177,13 +182,15 @@ func TestLegacyAdapter_Filter(t *testing.T) {
 			name: "allow filters deny events that only match some expressions",
 			args: newArgs(),
 			fields: fields{
-				Store: func() store.Store {
+				Store: func() storev2.Interface {
 					filter := newFilter(corev2.EventFilterActionAllow, []string{
 						`event.check.output == "matched"`,
 						`event.check.output == "unmatched"`,
 					})
-					stor := &mockstore.MockStore{}
-					stor.On("GetEventFilterByName", mock.Anything, filter.Name).Return(filter, nil)
+					stor := &mockstore.V2MockStore{}
+					cs := new(mockstore.ConfigStore)
+					stor.On("GetConfigStore").Return(cs)
+					cs.On("Get", mock.Anything, mock.Anything).Return(mockstore.Wrapper[*corev2.EventFilter]{Value: filter}, nil)
 					return stor
 				}(),
 			},
@@ -194,10 +201,12 @@ func TestLegacyAdapter_Filter(t *testing.T) {
 			name: "deny filters allow events that do not match expression",
 			args: newArgs(),
 			fields: fields{
-				Store: func() store.Store {
+				Store: func() storev2.Interface {
 					filter := newFilter(corev2.EventFilterActionDeny, []string{`event.check.output == "unmatched"`})
-					stor := &mockstore.MockStore{}
-					stor.On("GetEventFilterByName", mock.Anything, filter.Name).Return(filter, nil)
+					stor := &mockstore.V2MockStore{}
+					cs := new(mockstore.ConfigStore)
+					stor.On("GetConfigStore").Return(cs)
+					cs.On("Get", mock.Anything, mock.Anything).Return(mockstore.Wrapper[*corev2.EventFilter]{Value: filter}, nil)
 					return stor
 				}(),
 			},
@@ -208,10 +217,12 @@ func TestLegacyAdapter_Filter(t *testing.T) {
 			name: "deny filters deny events that match expression",
 			args: newArgs(),
 			fields: fields{
-				Store: func() store.Store {
+				Store: func() storev2.Interface {
 					filter := newFilter(corev2.EventFilterActionDeny, []string{`event.check.output == "matched"`})
-					stor := &mockstore.MockStore{}
-					stor.On("GetEventFilterByName", mock.Anything, filter.Name).Return(filter, nil)
+					stor := &mockstore.V2MockStore{}
+					cs := new(mockstore.ConfigStore)
+					stor.On("GetConfigStore").Return(cs)
+					cs.On("Get", mock.Anything, mock.Anything).Return(mockstore.Wrapper[*corev2.EventFilter]{Value: filter}, nil)
 					return stor
 				}(),
 			},
@@ -219,20 +230,22 @@ func TestLegacyAdapter_Filter(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "deny filters allow events that only match some expressions",
+			name: "deny filters deny events that only match some expressions",
 			args: newArgs(),
 			fields: fields{
-				Store: func() store.Store {
+				Store: func() storev2.Interface {
 					filter := newFilter(corev2.EventFilterActionDeny, []string{
 						`event.check.output == "unmatched"`,
 						`event.check.output == "matched"`,
 					})
-					stor := &mockstore.MockStore{}
-					stor.On("GetEventFilterByName", mock.Anything, filter.Name).Return(filter, nil)
+					stor := &mockstore.V2MockStore{}
+					cs := new(mockstore.ConfigStore)
+					stor.On("GetConfigStore").Return(cs)
+					cs.On("Get", mock.Anything, mock.Anything).Return(mockstore.Wrapper[*corev2.EventFilter]{Value: filter}, nil)
 					return stor
 				}(),
 			},
-			want:    false,
+			want:    true,
 			wantErr: false,
 		},
 	}
@@ -267,6 +280,55 @@ func Test_evaluateEventFilter(t *testing.T) {
 		args args
 		want bool
 	}{
+		{
+			name: "inclusive filter expressions are AND'd",
+			args: args{
+				ctx:   context.Background(),
+				event: corev2.FixtureEvent("entity1", "my-check"),
+				filter: func() *corev2.EventFilter {
+					filter := &corev2.EventFilter{
+						ObjectMeta: corev2.ObjectMeta{
+							Name: "inclusive-filter",
+						},
+						Action: corev2.EventFilterActionAllow,
+						Expressions: []string{
+							"event.check.name != 'check-foo'",
+							"event.check.name != 'check-bar'",
+							"event.check.name != 'check-baz'",
+						},
+					}
+					return filter
+				}(),
+			},
+			// The event should not be filtered, since the AND combination of
+			// the filter expressions is true and this is an inclusive "Allow"
+			// filter
+			want: false,
+		},
+		{
+			name: "exclusive filter expressions are OR'd",
+			args: args{
+				ctx:   context.Background(),
+				event: corev2.FixtureEvent("entity1", "check-bar"),
+				filter: func() *corev2.EventFilter {
+					filter := &corev2.EventFilter{
+						ObjectMeta: corev2.ObjectMeta{
+							Name: "exclusive-filter",
+						},
+						Action: corev2.EventFilterActionDeny,
+						Expressions: []string{
+							"event.check.name == 'check-foo'",
+							"event.check.name == 'check-bar'",
+							"event.check.name == 'check-baz'",
+						},
+					}
+					return filter
+				}(),
+			},
+			// The event should be filtered, since the OR combination of the
+			// filter expressions is true and this in an exclusive "Deny" filter
+			want: true,
+		},
 		{
 			name: "returns false when an event is within a time window with action allow",
 			args: args{
@@ -386,6 +448,10 @@ func Test_evaluateEventFilter(t *testing.T) {
 
 func TestJavascriptStoreAccess(t *testing.T) {
 	st := new(mockstore.MockStore)
+	sv2 := new(mockstore.V2MockStore)
+	cs := new(mockstore.ConfigStore)
+	sv2.On("GetConfigStore").Return(cs)
+	sv2.On("GetEventStore").Return(st)
 	pipelineRoleBinding := &corev2.RoleBinding{
 		Subjects: []corev2.Subject{
 			{
@@ -420,19 +486,27 @@ func TestJavascriptStoreAccess(t *testing.T) {
 	}
 	event := corev2.FixtureEvent("entity", "check")
 
-	// store mock supports rbac authorizer
-	st.On("ListClusterRoleBindings", mock.Anything, mock.Anything).Return(([]*corev2.ClusterRoleBinding)(nil), nil)
-	st.On("ListRoleBindings", mock.Anything, mock.Anything).Return([]*corev2.RoleBinding{pipelineRoleBinding}, nil)
-	st.On("GetRole", mock.Anything, "system:pipeline").Return(pipelineRole, nil)
-	st.On("GetClusterRole", mock.Anything).Return(nil, nil)
+	crbListReq := storev2.NewResourceRequestFromResource(new(corev2.ClusterRoleBinding))
 
-	// store mock supports event store
+	rbListReq := storev2.NewResourceRequestFromResource(new(corev2.RoleBinding))
+	rbListReq.Namespace = "default"
+
+	roleReq := storev2.NewResourceRequestFromResource(pipelineRole)
+
+	clusterRoleReq := storev2.NewResourceRequestFromResource(new(corev2.ClusterRole))
+	clusterRoleReq.Name = "system:pipeline"
+
+	cs.On("List", mock.Anything, crbListReq, mock.Anything).Return(mockstore.WrapList[*corev2.ClusterRoleBinding]{}, nil)
+	cs.On("List", mock.Anything, rbListReq, mock.Anything).Return(mockstore.WrapList[*corev2.RoleBinding]{pipelineRoleBinding}, nil)
+	cs.On("Get", mock.Anything, roleReq).Return(mockstore.Wrapper[*corev2.Role]{Value: pipelineRole}, nil)
+	cs.On("Get", mock.Anything, clusterRoleReq).Return(nil, &store.ErrNotFound{})
+
 	st.On("GetEventByEntityCheck", mock.Anything, "entity", "check").Return(event, nil)
 	st.On("GetEventByEntityCheck", mock.Anything, mock.Anything, mock.Anything).Return((*corev2.Event)(nil), nil)
 	st.On("GetEvents", mock.Anything, mock.Anything).Return([]*corev2.Event{event}, nil)
 
 	auth := &rbac.Authorizer{
-		Store: st,
+		Store: sv2,
 	}
 	ctx := store.NamespaceContext(context.Background(), "default")
 	client := api.NewEventClient(st, auth, nil)

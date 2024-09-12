@@ -4,11 +4,14 @@ import (
 	"context"
 
 	"github.com/google/uuid"
+	"github.com/sensu/sensu-go/backend/apid/request"
 	"github.com/sensu/sensu-go/backend/authentication/jwt"
 	"github.com/sensu/sensu-go/backend/messaging"
 	"github.com/sensu/sensu-go/backend/store"
+	storev2 "github.com/sensu/sensu-go/backend/store/v2"
 
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	corev2 "github.com/sensu/core/v2"
+	corev3 "github.com/sensu/core/v3"
 )
 
 const deletedEventSentinel = -1
@@ -20,17 +23,22 @@ type EventController struct {
 }
 
 // NewEventController returns new EventController
-func NewEventController(store store.EventStore, bus messaging.MessageBus) EventController {
+func NewEventController(store storev2.Interface, bus messaging.MessageBus) EventController {
 	return EventController{
-		store: store,
+		store: store.GetEventStore(),
 		bus:   bus,
 	}
 }
 
 // List returns resources available to the viewer filter by given params.
-func (a EventController) List(ctx context.Context, pred *store.SelectionPredicate) ([]corev2.Resource, error) {
+func (a EventController) List(ctx context.Context, pred *store.SelectionPredicate) ([]corev3.Resource, error) {
 	var results []*corev2.Event
 	var err error
+
+	// propogate selector from request context
+	if sel := request.SelectorFromContext(ctx); sel != nil {
+		ctx = storev2.EventContextWithSelector(ctx, sel)
+	}
 
 	// Fetch from store
 	if pred.Subcollection != "" {
@@ -43,9 +51,9 @@ func (a EventController) List(ctx context.Context, pred *store.SelectionPredicat
 		return nil, NewError(InternalErr, err)
 	}
 
-	resources := make([]corev2.Resource, len(results))
+	resources := make([]corev3.Resource, len(results))
 	for i, v := range results {
-		resources[i] = corev2.Resource(v)
+		resources[i] = corev3.Resource(v)
 	}
 
 	return resources, nil

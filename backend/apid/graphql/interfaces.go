@@ -4,7 +4,9 @@ import (
 	"context"
 
 	dto "github.com/prometheus/client_model/go"
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	corev2 "github.com/sensu/core/v2"
+	corev3 "github.com/sensu/core/v3"
+	"github.com/sensu/sensu-go/backend/api"
 	"github.com/sensu/sensu-go/backend/store"
 )
 
@@ -29,7 +31,7 @@ type EntityClient interface {
 	CreateEntity(context.Context, *corev2.Entity) error
 	UpdateEntity(context.Context, *corev2.Entity) error
 	FetchEntity(context.Context, string) (*corev2.Entity, error)
-	ListEntities(ctx context.Context) ([]*corev2.Entity, error)
+	ListEntities(ctx context.Context, pred *store.SelectionPredicate) ([]*corev2.Entity, error)
 }
 
 type EventClient interface {
@@ -76,10 +78,10 @@ type SilencedClient interface {
 }
 
 type NamespaceClient interface {
-	ListNamespaces(ctx context.Context, pred *store.SelectionPredicate) ([]*corev2.Namespace, error)
-	FetchNamespace(ctx context.Context, name string) (*corev2.Namespace, error)
-	CreateNamespace(ctx context.Context, namespace *corev2.Namespace) error
-	UpdateNamespace(ctx context.Context, namespace *corev2.Namespace) error
+	ListNamespaces(ctx context.Context, pred *store.SelectionPredicate) ([]*corev3.Namespace, error)
+	FetchNamespace(ctx context.Context, name string) (*corev3.Namespace, error)
+	CreateNamespace(ctx context.Context, namespace *corev3.Namespace) error
+	UpdateNamespace(ctx context.Context, namespace *corev3.Namespace) error
 }
 
 type HookClient interface {
@@ -94,6 +96,10 @@ type UserClient interface {
 	FetchUser(ctx context.Context, name string) (*corev2.User, error)
 	CreateUser(ctx context.Context, user *corev2.User) error
 	UpdateUser(ctx context.Context, user *corev2.User) error
+}
+
+type ClusterMetricStore interface {
+	EntityCount(ctx context.Context, kind string) (int, error)
 }
 
 type RBACClient interface {
@@ -117,11 +123,12 @@ type RBACClient interface {
 
 type GenericClient interface {
 	SetTypeMeta(meta corev2.TypeMeta) error
-	Create(ctx context.Context, value corev2.Resource) error
-	Update(ctx context.Context, value corev2.Resource) error
+	Create(ctx context.Context, value corev3.Resource) error
+	Update(ctx context.Context, value corev3.Resource) error
 	Delete(ctx context.Context, name string) error
-	Get(ctx context.Context, name string, val corev2.Resource) error
+	Get(ctx context.Context, name string, val corev3.Resource) error
 	List(ctx context.Context, resources interface{}, pred *store.SelectionPredicate) error
+	Authorize(ctx context.Context, verb api.RBACVerb, name string) error
 }
 
 type EtcdHealthController interface {

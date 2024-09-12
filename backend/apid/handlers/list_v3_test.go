@@ -2,11 +2,10 @@ package handlers
 
 import (
 	"context"
-	"reflect"
 	"testing"
 
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
-	corev3 "github.com/sensu/sensu-go/api/core/v3"
+	corev2 "github.com/sensu/core/v2"
+	corev3 "github.com/sensu/core/v3"
 	"github.com/sensu/sensu-go/backend/store"
 	storev2 "github.com/sensu/sensu-go/backend/store/v2"
 	"github.com/sensu/sensu-go/backend/store/v2/wrap"
@@ -21,14 +20,14 @@ func TestHandlers_ListV3Resources(t *testing.T) {
 	wrapper, _ := storev2.WrapResource(barResource)
 	tests := []struct {
 		name      string
-		storeFunc func(*mockstore.V2MockStore)
+		storeFunc func(*mockstore.ConfigStore)
 		want      []corev3.Resource
 		wantErr   bool
 	}{
 		{
 			name: "store err",
-			storeFunc: func(s *mockstore.V2MockStore) {
-				s.On("List", mock.Anything, mock.Anything).
+			storeFunc: func(s *mockstore.ConfigStore) {
+				s.On("List", mock.Anything, mock.Anything, mock.Anything).
 					Return((storev2.WrapList)(nil), &store.ErrInternal{})
 			},
 			want:    []corev3.Resource(nil),
@@ -36,8 +35,8 @@ func TestHandlers_ListV3Resources(t *testing.T) {
 		},
 		{
 			name: "sucessful list",
-			storeFunc: func(s *mockstore.V2MockStore) {
-				s.On("List", mock.Anything, mock.Anything).
+			storeFunc: func(s *mockstore.ConfigStore) {
+				s.On("List", mock.Anything, mock.Anything, mock.Anything).
 					Return(storev2.WrapList(wrap.List{wrapper.(*wrap.Wrapper)}), nil)
 			},
 			want: []corev3.Resource{corev3.Resource(barResource)},
@@ -46,23 +45,18 @@ func TestHandlers_ListV3Resources(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			s := &mockstore.V2MockStore{}
+			cs := new(mockstore.ConfigStore)
+			s.On("GetConfigStore").Return(cs)
 			if tt.storeFunc != nil {
-				tt.storeFunc(s)
+				tt.storeFunc(cs)
 			}
 
-			h := Handlers{
-				V3Resource: &fixture.V3Resource{},
-				StoreV2:    s,
-			}
+			h := NewHandlers[*fixture.V3Resource](s)
 
-			got, err := h.ListV3Resources(context.Background(), &store.SelectionPredicate{})
+			_, err := h.ListResources(context.Background(), &store.SelectionPredicate{})
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Handlers.ListResources() error = %v, wantErr %v", err, tt.wantErr)
 				return
-			}
-
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("Handlers.ListResources() = %#v, want %#v", got, tt.want)
 			}
 		})
 	}

@@ -9,11 +9,13 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	corev2 "github.com/sensu/core/v2"
+	corev3 "github.com/sensu/core/v3"
 	"github.com/sensu/sensu-go/backend/apid/actions"
 	"github.com/sensu/sensu-go/backend/apid/handlers"
-	"github.com/sensu/sensu-go/backend/store"
-	"github.com/sensu/sensu-go/types"
+	"github.com/sensu/sensu-go/backend/apid/request"
+	"github.com/sensu/sensu-go/backend/queue"
+	storev2 "github.com/sensu/sensu-go/backend/store/v2"
 )
 
 // checkController represents the controller needs of the ChecksRouter.
@@ -26,17 +28,14 @@ type checkController interface {
 // ChecksRouter handles requests for /checks
 type ChecksRouter struct {
 	controller checkController
-	handlers   handlers.Handlers
+	store      storev2.Interface
 }
 
 // NewChecksRouter instantiates new router for controlling check resources
-func NewChecksRouter(store store.Store, getter types.QueueGetter) *ChecksRouter {
+func NewChecksRouter(store storev2.Interface, queue queue.Client) *ChecksRouter {
 	return &ChecksRouter{
-		controller: actions.NewCheckController(store, getter),
-		handlers: handlers.Handlers{
-			Resource: &corev2.CheckConfig{},
-			Store:    store,
-		},
+		controller: actions.NewCheckController(store, queue),
+		store:      store,
 	}
 }
 
@@ -47,13 +46,15 @@ func (r *ChecksRouter) Mount(parent *mux.Router) {
 		PathPrefix: "/namespaces/{namespace}/{resource:checks}",
 	}
 
-	routes.Del(r.handlers.DeleteResource)
-	routes.Get(r.handlers.GetResource)
-	routes.List(r.handlers.ListResources, corev2.CheckConfigFields)
-	routes.ListAllNamespaces(r.handlers.ListResources, "/{resource:checks}", corev2.CheckConfigFields)
-	routes.Patch(r.handlers.PatchResource)
-	routes.Post(r.handlers.CreateResource)
-	routes.Put(r.handlers.CreateOrUpdateResource)
+	handlers := handlers.NewHandlers[*corev2.CheckConfig](r.store)
+
+	routes.Del(handlers.DeleteResource)
+	routes.Get(handlers.GetResource)
+	routes.List(handlers.ListResources, corev3.CheckConfigFields)
+	routes.ListAllNamespaces(handlers.ListResources, "/{resource:checks}", corev3.CheckConfigFields)
+	routes.Patch(handlers.PatchResource)
+	routes.Post(handlers.CreateResource)
+	routes.Put(handlers.CreateOrUpdateResource)
 
 	// Custom
 	routes.Path("{id}/hooks/{type}", r.addCheckHook).Methods(http.MethodPut)
@@ -63,43 +64,47 @@ func (r *ChecksRouter) Mount(parent *mux.Router) {
 	parent.HandleFunc(path.Join(routes.PathPrefix, "{id}/execute"), r.adhocRequest).Methods(http.MethodPost)
 }
 
-func (r *ChecksRouter) addCheckHook(req *http.Request) (interface{}, error) {
-	cfg := corev2.HookList{}
-	if err := UnmarshalBody(req, &cfg); err != nil {
-		return nil, err
+func (r *ChecksRouter) addCheckHook(req *http.Request) (handlers.HandlerResponse, error) {
+	var cfg corev2.HookList
+	var response handlers.HandlerResponse
+
+	if err := json.NewDecoder(req.Body).Decode(&cfg); err != nil {
+		return response, actions.NewError(actions.InvalidArgument, err)
 	}
 
 	params := mux.Vars(req)
 	id, err := url.PathUnescape(params["id"])
 	if err != nil {
-		return nil, err
+		return response, err
 	}
 	err = r.controller.AddCheckHook(req.Context(), id, cfg)
 
-	return nil, err
+	return response, err
 }
 
-func (r *ChecksRouter) removeCheckHook(req *http.Request) (interface{}, error) {
+func (r *ChecksRouter) removeCheckHook(req *http.Request) (handlers.HandlerResponse, error) {
+	var response handlers.HandlerResponse
+
 	params := mux.Vars(req)
 	id, err := url.PathUnescape(params["id"])
 	if err != nil {
-		return nil, err
+		return response, err
 	}
 	typ, err := url.PathUnescape(params["type"])
 	if err != nil {
-		return nil, err
+		return response, err
 	}
 	hook, err := url.PathUnescape(params["hook"])
 	if err != nil {
-		return nil, err
+		return response, err
 	}
 	err = r.controller.RemoveCheckHook(req.Context(), id, typ, hook)
-	return nil, err
+	return response, err
 }
 
 func (r *ChecksRouter) adhocRequest(w http.ResponseWriter, req *http.Request) {
-	adhocReq := corev2.AdhocRequest{}
-	if err := UnmarshalBody(req, &adhocReq); err != nil {
+	adhocReq, err := request.Resource[*corev2.AdhocRequest](req)
+	if err != nil {
 		WriteError(w, err)
 		return
 	}
@@ -109,7 +114,7 @@ func (r *ChecksRouter) adhocRequest(w http.ResponseWriter, req *http.Request) {
 		WriteError(w, err)
 		return
 	}
-	if err := r.controller.QueueAdhocRequest(req.Context(), id, &adhocReq); err != nil {
+	if err := r.controller.QueueAdhocRequest(req.Context(), id, adhocReq); err != nil {
 		WriteError(w, err)
 		return
 	}

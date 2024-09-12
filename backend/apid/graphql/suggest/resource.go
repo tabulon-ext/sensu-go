@@ -1,32 +1,13 @@
 package suggest
 
-import (
-	"path"
-	"regexp"
-)
-
-var (
-	nsRe = regexp.MustCompile("{namespace}")
-)
+import corev3 "github.com/sensu/core/v3"
 
 // Resource represents a Sensu resource
 type Resource struct {
-	Group  string
-	Name   string
-	Path   string
-	Fields []Field
-}
-
-// URIPath given a namespace returns the API path used to get/list/put/delete
-// the resource.
-func (r *Resource) URIPath(ns string) string {
-	if r.Path != "" {
-		return nsRe.ReplaceAllString(r.Path, ns)
-	}
-	if r.Group == "core/v2" {
-		return path.Join("/", "api", r.Group, "namespaces", ns, r.Name)
-	}
-	return path.Join("/", "api", r.Group, r.Name)
+	Group      string
+	Name       string
+	Fields     []Field
+	FilterFunc func(corev3.Resource) map[string]string
 }
 
 // LookupField uses given ref to find the appropriate field.

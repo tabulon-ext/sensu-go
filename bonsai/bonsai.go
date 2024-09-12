@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	goversion "github.com/hashicorp/go-version"
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	corev2 "github.com/sensu/core/v2"
 )
 
 const (
@@ -162,6 +162,16 @@ func (b *Asset) LatestVersion() *goversion.Version {
 // GetObjectMeta is just a no-op to satisfy the Resource interface
 func (o *OutdatedAsset) GetObjectMeta() corev2.ObjectMeta {
 	return corev2.ObjectMeta{}
+}
+
+func (o *OutdatedAsset) GetMetadata() *corev2.ObjectMeta {
+	return &corev2.ObjectMeta{}
+}
+
+func (o *OutdatedAsset) SetMetadata(*corev2.ObjectMeta) {}
+
+func (o *OutdatedAsset) StoreName() string {
+	return ""
 }
 
 // SetObjectMeta is just a no-op to satisfy the Resource interface

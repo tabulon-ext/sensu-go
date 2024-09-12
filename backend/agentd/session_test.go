@@ -10,14 +10,12 @@ import (
 	"time"
 
 	"github.com/gogo/protobuf/proto"
+	corev2 "github.com/sensu/core/v2"
+	corev3 "github.com/sensu/core/v3"
 	"github.com/sensu/sensu-go/agent"
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
-	corev3 "github.com/sensu/sensu-go/api/core/v3"
 	"github.com/sensu/sensu-go/backend/messaging"
 	"github.com/sensu/sensu-go/backend/store"
 	storev2 "github.com/sensu/sensu-go/backend/store/v2"
-	"github.com/sensu/sensu-go/backend/store/v2/storetest"
-	"github.com/sensu/sensu-go/backend/store/v2/wrap"
 	"github.com/sensu/sensu-go/handler"
 	"github.com/sensu/sensu-go/testing/mockbus"
 	"github.com/sensu/sensu-go/testing/mockstore"
@@ -36,11 +34,13 @@ func TestGoodSessionConfigProto(t *testing.T) {
 	require.NoError(t, bus.Start())
 
 	st := &mockstore.MockStore{}
-	st.On(
-		"GetNamespace",
+	ns := new(mockstore.NamespaceStore)
+	ns.On(
+		"Get",
 		mock.Anything,
 		"acme",
-	).Return(&corev2.Namespace{}, nil)
+	).Return(&corev3.Namespace{}, nil)
+	st.On("GetNamespaceStore").Return(ns)
 
 	cfg := SessionConfig{
 		AgentName:     "testing",
@@ -48,7 +48,6 @@ func TestGoodSessionConfigProto(t *testing.T) {
 		Subscriptions: []string{"testing"},
 		Conn:          conn,
 		Bus:           bus,
-		Store:         st,
 		Unmarshal:     proto.Unmarshal,
 		Marshal:       proto.Marshal,
 	}
@@ -57,28 +56,11 @@ func TestGoodSessionConfigProto(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-func TestMakeEntitySwitchBurialEvent(t *testing.T) {
-	cfg := SessionConfig{
-		Namespace:     "default",
-		AgentName:     "entity",
-		Subscriptions: []string{"default"},
-	}
-	event := makeEntitySwitchBurialEvent(cfg)
-	if err := event.Validate(); err != nil {
-		t.Fatal(err)
-	}
-	if err := event.Entity.Validate(); err != nil {
-		t.Fatal(err)
-	}
-	if got, want := event.Timestamp, int64(deletedEventSentinel); got != want {
-		t.Errorf("bad timestamp: got %d, want %d", got, want)
-	}
-}
-
 func TestSession_sender(t *testing.T) {
 	type busFunc func(*messaging.WizardBus, *sync.WaitGroup)
 	type connFunc func(*mocktransport.MockTransport, *sync.WaitGroup)
-	type storeFunc func(*storetest.Store, *sync.WaitGroup)
+	type storeFunc func(*mockstore.V2MockStore, *sync.WaitGroup)
+	fixWrapper, _ := storev2.WrapResource(corev3.FixtureEntityConfig("testing"))
 
 	tests := []struct {
 		name          string
@@ -103,9 +85,9 @@ func TestSession_sender(t *testing.T) {
 				}).Return(nil)
 			},
 			busFunc: func(bus *messaging.WizardBus, wg *sync.WaitGroup) {
-				e := store.WatchEventEntityConfig{
-					Action: store.WatchUpdate,
-					Entity: corev3.FixtureEntityConfig("testing"),
+				e := &storev2.WatchEvent{
+					Type:  storev2.WatchUpdate,
+					Value: fixWrapper,
 				}
 				publishWatchEvent(t, bus, e)
 			},
@@ -117,9 +99,9 @@ func TestSession_sender(t *testing.T) {
 				conn.On("Close").Return(nil)
 			},
 			busFunc: func(bus *messaging.WizardBus, wg *sync.WaitGroup) {
-				e := store.WatchEventEntityConfig{
-					Action: store.WatchDelete,
-					Entity: corev3.FixtureEntityConfig("testing"),
+				e := &storev2.WatchEvent{
+					Type:  storev2.WatchUpdate,
+					Value: fixWrapper,
 				}
 				publishWatchEvent(t, bus, e)
 			},
@@ -132,39 +114,20 @@ func TestSession_sender(t *testing.T) {
 				conn.On("Send", mock.Anything).Once().Return(transport.ClosedError{})
 			},
 			busFunc: func(bus *messaging.WizardBus, wg *sync.WaitGroup) {
-				e := store.WatchEventEntityConfig{
-					Action: store.WatchUnknown,
-					Entity: corev3.FixtureEntityConfig("testing"),
+				e := &storev2.WatchEvent{
+					Type:  storev2.WatchUpdate,
+					Value: fixWrapper,
 				}
 				publishWatchEvent(t, bus, e)
 
 				// publish a second valid events, which will trigger the Send() method
 				// of our transport, which will mock a closed connection that should
 				// only be called once
-				e = store.WatchEventEntityConfig{
-					Action: store.WatchCreate,
-					Entity: corev3.FixtureEntityConfig("testing"),
+				e = &storev2.WatchEvent{
+					Type:  storev2.WatchUpdate,
+					Value: fixWrapper,
 				}
 				publishWatchEvent(t, bus, e)
-			},
-		},
-		{
-			name: "invalid class entities are reset to the agent class",
-			busFunc: func(bus *messaging.WizardBus, wg *sync.WaitGroup) {
-				entity := corev3.FixtureEntityConfig("testing")
-				entity.EntityClass = corev2.EntityProxyClass
-				e := store.WatchEventEntityConfig{
-					Action: store.WatchUpdate,
-					Entity: entity,
-				}
-				publishWatchEvent(t, bus, e)
-			},
-			storeFunc: func(store *storetest.Store, wg *sync.WaitGroup) {
-				wg.Add(1)
-				store.On("CreateOrUpdate", mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
-					// Close the wait channel once we receive the storev2 request
-					wg.Done()
-				}).Return(nil)
 			},
 		},
 		{
@@ -199,9 +162,9 @@ func TestSession_sender(t *testing.T) {
 				}).Return(nil)
 			},
 			busFunc: func(bus *messaging.WizardBus, wg *sync.WaitGroup) {
-				e := store.WatchEventEntityConfig{
-					Action: store.WatchUpdate,
-					Entity: corev3.FixtureEntityConfig("testing"),
+				e := &storev2.WatchEvent{
+					Type:  storev2.WatchUpdate,
+					Value: fixWrapper,
 				}
 				publishWatchEvent(t, bus, e)
 
@@ -234,9 +197,9 @@ func TestSession_sender(t *testing.T) {
 				}).Return(nil)
 			},
 			busFunc: func(bus *messaging.WizardBus, wg *sync.WaitGroup) {
-				e := store.WatchEventEntityConfig{
-					Action: store.WatchUpdate,
-					Entity: corev3.FixtureEntityConfig("testing"),
+				e := &storev2.WatchEvent{
+					Type:  storev2.WatchUpdate,
+					Value: fixWrapper,
 				}
 				publishWatchEvent(t, bus, e)
 
@@ -261,8 +224,7 @@ func TestSession_sender(t *testing.T) {
 			}
 
 			// Mock our store
-			st := &mockstore.MockStore{}
-			storev2 := &storetest.Store{}
+			storev2 := &mockstore.V2MockStore{}
 			if tt.storeFunc != nil {
 				tt.storeFunc(storev2, wg)
 			}
@@ -282,7 +244,6 @@ func TestSession_sender(t *testing.T) {
 				Subscriptions: tt.subscriptions,
 				Conn:          conn,
 				Bus:           bus,
-				Store:         st,
 				Storev2:       storev2,
 				Unmarshal:     agent.UnmarshalJSON,
 				Marshal:       agent.MarshalJSON,
@@ -300,6 +261,7 @@ func TestSession_sender(t *testing.T) {
 				t.Fatal(err)
 			}
 
+			conn.On("Send", mock.Anything).Return(nil)
 			go session.sender()
 
 			// Send our watch events over the wizard bus
@@ -326,7 +288,7 @@ func TestSession_sender(t *testing.T) {
 
 func TestSession_Start(t *testing.T) {
 	type connFunc func(*mocktransport.MockTransport, *sync.WaitGroup)
-	type storeFunc func(*storetest.Store, *sync.WaitGroup)
+	type storeFunc func(*mockstore.V2MockStore, *sync.WaitGroup)
 
 	tests := []struct {
 		name      string
@@ -351,8 +313,10 @@ func TestSession_Start(t *testing.T) {
 				}).Return(nil)
 				conn.On("Close").Return(nil)
 			},
-			storeFunc: func(s *storetest.Store, wg *sync.WaitGroup) {
-				s.On("Get", mock.Anything).Return(&wrap.Wrapper{}, &store.ErrNotFound{})
+			storeFunc: func(s *mockstore.V2MockStore, wg *sync.WaitGroup) {
+				ecstore := new(mockstore.EntityConfigStore)
+				ecstore.On("Get", mock.Anything, mock.Anything, mock.Anything).Return((*corev3.EntityConfig)(nil), &store.ErrNotFound{})
+				s.On("GetEntityConfigStore").Return(ecstore)
 			},
 		},
 		{
@@ -372,13 +336,10 @@ func TestSession_Start(t *testing.T) {
 				}).Return(nil)
 				conn.On("Close").Return(nil)
 			},
-			storeFunc: func(s *storetest.Store, wg *sync.WaitGroup) {
-				cfg := corev3.FixtureEntityConfig("testing")
-				wrappedConfig, err := storev2.WrapResource(cfg)
-				if err != nil {
-					t.Fatal(err)
-				}
-				s.On("Get", mock.Anything).Return(wrappedConfig, nil)
+			storeFunc: func(s *mockstore.V2MockStore, wg *sync.WaitGroup) {
+				ecstore := new(mockstore.EntityConfigStore)
+				ecstore.On("Get", mock.Anything, mock.Anything, mock.Anything).Return(corev3.FixtureEntityConfig("testing"), nil)
+				s.On("GetEntityConfigStore").Return(ecstore)
 			},
 		},
 		{
@@ -388,8 +349,10 @@ func TestSession_Start(t *testing.T) {
 				conn.On("Closed").Return(true)
 				conn.On("Close").Return(nil)
 			},
-			storeFunc: func(s *storetest.Store, wg *sync.WaitGroup) {
-				s.On("Get", mock.Anything).Return(&wrap.Wrapper{}, errors.New("fatal error"))
+			storeFunc: func(s *mockstore.V2MockStore, wg *sync.WaitGroup) {
+				ecstore := new(mockstore.EntityConfigStore)
+				ecstore.On("Get", mock.Anything, mock.Anything, mock.Anything).Return((*corev3.EntityConfig)(nil), errors.New("fatal"))
+				s.On("GetEntityConfigStore").Return(ecstore)
 			},
 			wantErr: true,
 		},
@@ -405,8 +368,7 @@ func TestSession_Start(t *testing.T) {
 			}
 
 			// Mock our store
-			st := &mockstore.MockStore{}
-			storev2 := &storetest.Store{}
+			storev2 := &mockstore.V2MockStore{}
 			if tt.storeFunc != nil {
 				tt.storeFunc(storev2, wg)
 			}
@@ -425,7 +387,6 @@ func TestSession_Start(t *testing.T) {
 				Namespace: "default",
 				Conn:      conn,
 				Bus:       bus,
-				Store:     st,
 				Storev2:   storev2,
 				Unmarshal: agent.UnmarshalJSON,
 				Marshal:   agent.MarshalJSON,
@@ -462,12 +423,12 @@ func TestSession_Start(t *testing.T) {
 	}
 }
 
-func publishWatchEvent(t *testing.T, bus *messaging.WizardBus, event store.WatchEventEntityConfig) {
+func publishWatchEvent(t *testing.T, bus *messaging.WizardBus, event *storev2.WatchEvent) {
 	t.Helper()
 
 	if err := bus.Publish(messaging.EntityConfigTopic(
-		event.Entity.Metadata.Namespace, event.Entity.Metadata.Name,
-	), &event); err != nil {
+		"default", "testing",
+	), event); err != nil {
 		t.Fatal(err)
 	}
 }

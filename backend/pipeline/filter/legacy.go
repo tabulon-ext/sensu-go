@@ -3,15 +3,15 @@ package filter
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/robertkrimen/otto"
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	corev2 "github.com/sensu/core/v2"
 	"github.com/sensu/sensu-go/asset"
 	"github.com/sensu/sensu-go/backend/store"
+	storev2 "github.com/sensu/sensu-go/backend/store/v2"
 	"github.com/sensu/sensu-go/js"
-	"github.com/sensu/sensu-go/types/dynamic"
+	"github.com/sensu/sensu-go/dynamic"
 )
 
 const (
@@ -28,7 +28,7 @@ var (
 		"not_silenced",
 	}
 
-	getFilterErr = errors.New("could not retrieve filter")
+	errCouldNotRetrieveFilter = errors.New("could not retrieve filter")
 
 	// PipelineFilterFuncs gets patched by enterprise sensu-go
 	PipelineFilterFuncs map[string]interface{}
@@ -38,7 +38,7 @@ var (
 // core.v2/EventFilter type.
 type LegacyAdapter struct {
 	AssetGetter  asset.Getter
-	Store        store.Store
+	Store        storev2.Interface
 	StoreTimeout time.Duration
 }
 
@@ -71,18 +71,15 @@ func (l *LegacyAdapter) Filter(ctx context.Context, ref *corev2.ResourceReferenc
 	fields["pipeline_workflow"] = corev2.ContextPipelineWorkflow(ctx)
 
 	// Retrieve the filter from the store with its name
+	fstore := storev2.Of[*corev2.EventFilter](l.Store)
 	ctx = context.WithValue(ctx, corev2.NamespaceKey, event.Entity.Namespace)
 	tctx, cancel := context.WithTimeout(ctx, l.StoreTimeout)
 
-	filter, err := l.Store.GetEventFilterByName(tctx, ref.Name)
+	filter, err := fstore.Get(tctx, storev2.ID{Namespace: event.Entity.Namespace, Name: ref.Name})
 	cancel()
 	if err != nil {
-		logger.WithFields(fields).WithError(err).Warning(getFilterErr.Error())
+		logger.WithFields(fields).WithError(err).Warning(errCouldNotRetrieveFilter.Error())
 		return false, err
-	}
-	if filter == nil {
-		logger.WithFields(fields).WithError(err).Warning(getFilterErr.Error())
-		return false, fmt.Errorf(getFilterErr.Error())
 	}
 
 	// Execute the filter, evaluating each of its
@@ -114,6 +111,7 @@ func evaluateEventFilter(ctx context.Context, event *corev2.Event, filter *corev
 	event.Entity = event.Entity.GetRedactedEntity()
 
 	fields := event.LogFields(false)
+	fields["action"] = filter.Action
 	fields["filter"] = filter.Name
 	fields["assets"] = filter.RuntimeAssets
 	fields["pipeline"] = corev2.ContextPipeline(ctx)
@@ -132,9 +130,9 @@ func evaluateEventFilter(ctx context.Context, event *corev2.Event, filter *corev
 			return true
 		}
 
-		if filter.Action == corev2.EventFilterActionDeny && !inWindows {
-			logger.WithFields(fields).Debug("allowing event outside of filtering window")
-			return false
+		if filter.Action == corev2.EventFilterActionDeny && inWindows {
+			logger.WithFields(fields).Debug("denying event inside of filtering window")
+			return true
 		}
 	}
 
@@ -166,43 +164,57 @@ func evaluateEventFilter(ctx context.Context, event *corev2.Event, filter *corev
 		Funcs:  PipelineFilterFuncs,
 	}
 
-	for _, expression := range filter.Expressions {
-		match, err := env.Eval(ctx, expression)
-		if err != nil {
-			logger.WithFields(fields).WithError(err).Error("error evaluating javascript event filter")
-			continue
+	switch filter.Action {
+	// Inclusive "Allow" filters let events through when the AND'd combination
+	// of their expressions is true. That is, events that match all of the
+	// expressions are not filtered.
+	case corev2.EventFilterActionAllow:
+
+		for _, expression := range filter.Expressions {
+			match, err := env.Eval(ctx, expression)
+			if err != nil {
+				logger.WithFields(fields).WithError(err).Error("error evaluating javascript event filter")
+				continue
+			}
+
+			// One of the expressions did not match, filter the event
+			if !match {
+				logger.WithFields(fields).Debug("denying event that does not match filter")
+				return true
+			}
 		}
 
-		// Allow - One of the expressions did not match, filter the event
-		if filter.Action == corev2.EventFilterActionAllow && !match {
-			logger.WithFields(fields).Debug("denying event that does not match filter")
-			return true
-		}
-
-		// Deny - One of the expressions did not match, do not filter the event
-		if filter.Action == corev2.EventFilterActionDeny && !match {
-			logger.WithFields(fields).Debug("allowing event that does not match filter")
-			return false
-		}
-	}
-
-	// Allow - All of the expressions matched, do not filter the event
-	if filter.Action == corev2.EventFilterActionAllow {
+		// All the expressions matched, do not filter the event
 		logger.WithFields(fields).Debug("allowing event that matches filter")
 		return false
+
+	// Exclusive "Deny" filters let events through when the OR'd combination of
+	// their expressions is true. That is, events that match one or more of the
+	// expressions are filtered.
+	case corev2.EventFilterActionDeny:
+
+		for _, expression := range filter.Expressions {
+			match, err := env.Eval(ctx, expression)
+			if err != nil {
+				logger.WithFields(fields).WithError(err).Error("error evaluating javascript event filter")
+				continue
+			}
+
+			// One of the expressions matched, filter the event
+			if match {
+				logger.WithFields(fields).Debug("denying event that matches filter")
+				return true
+			}
+		}
+
+		// None of the expressions matched, do not filter the event
+		logger.WithFields(fields).Debug("allowing event that does not match filter")
+		return false
+
+	default:
+		logger.WithFields(fields).Error("unrecognized filter action")
+		return false
 	}
-
-	// Deny - All of the expressions matched, filter the event
-	if filter.Action == corev2.EventFilterActionDeny {
-		logger.WithFields(fields).Debug("denying event that matches filter")
-		return true
-	}
-
-	// Something weird happened, let's not filter the event and log a warning message
-	logger.WithFields(fields).
-		Warn("not filtering event due to unhandled case")
-
-	return false
 }
 
 type FilterExecutionEnvironment struct {

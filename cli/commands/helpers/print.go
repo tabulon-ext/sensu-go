@@ -5,10 +5,10 @@ import (
 	"io"
 	"net/http"
 
+	corev3 "github.com/sensu/core/v3"
 	"github.com/sensu/sensu-go/cli/client/config"
 	"github.com/sensu/sensu-go/cli/commands/flags"
 	"github.com/sensu/sensu-go/cli/elements/list"
-	"github.com/sensu/sensu-go/types"
 	"github.com/spf13/cobra"
 )
 
@@ -18,7 +18,7 @@ type printTableFunc func(interface{}, io.Writer)
 const HeaderWarning = "Sensu-Entity-Warning"
 
 // PrintList prints a list of resources to stdout with a title, if relevant.
-func PrintList(cmd *cobra.Command, format string, printTable printTableFunc, objects []types.Resource, v interface{}, header http.Header) error {
+func PrintList(cmd *cobra.Command, format string, printTable printTableFunc, objects []corev3.Resource, v interface{}, header http.Header) error {
 	if warning := header.Get(HeaderWarning); warning != "" {
 		if err := PrintTitle(GetChangedStringValueViper(flags.Format, cmd.Flags()), format, warning, cmd.OutOrStdout()); err != nil {
 			return err
@@ -28,7 +28,7 @@ func PrintList(cmd *cobra.Command, format string, printTable printTableFunc, obj
 }
 
 // Print displays
-func Print(cmd *cobra.Command, format string, printTable printTableFunc, objects []types.Resource, v interface{}) error {
+func Print(cmd *cobra.Command, format string, printTable printTableFunc, objects []corev3.Resource, v interface{}) error {
 	viper, err := InitViper(cmd.Flags())
 	if err != nil {
 		return err
@@ -39,12 +39,10 @@ func Print(cmd *cobra.Command, format string, printTable printTableFunc, objects
 	}
 	switch format {
 	case config.FormatJSON:
-		return PrintJSON(v, cmd.OutOrStdout())
-	case config.FormatWrappedJSON:
 		if objects == nil {
 			return PrintJSON(v, cmd.OutOrStdout())
 		}
-		return PrintWrappedJSONList(objects, cmd.OutOrStdout())
+		return PrintResourceListJSON(objects, cmd.OutOrStdout())
 	case config.FormatYAML:
 		if objects == nil {
 			return PrintYAML(v, cmd.OutOrStdout())
@@ -65,13 +63,11 @@ func PrintFormatted(flag string, format string, v interface{}, w io.Writer, prin
 	}
 	switch format {
 	case config.FormatJSON:
-		return PrintJSON(v, w)
-	case config.FormatWrappedJSON:
-		r, ok := v.(types.Resource)
+		r, ok := v.(corev3.Resource)
 		if !ok {
 			return fmt.Errorf("%t is not a Resource", v)
 		}
-		return PrintWrappedJSON(r, w)
+		return PrintResourceJSON(r, w)
 	case config.FormatYAML:
 		return PrintYAML(v, w)
 	default:
@@ -87,7 +83,7 @@ func PrintTitle(flag string, format string, title string, w io.Writer) error {
 	}
 	// checking the formats exclusively to cover invalid formats
 	// that get defaulted to tabular
-	if format != config.FormatJSON && format != config.FormatWrappedJSON && format != config.FormatYAML {
+	if format != config.FormatJSON && format != config.FormatYAML {
 		cfg := &list.Config{
 			Title: title,
 		}

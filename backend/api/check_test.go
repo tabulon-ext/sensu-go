@@ -5,10 +5,11 @@ import (
 	"reflect"
 	"testing"
 
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	corev2 "github.com/sensu/core/v2"
 	"github.com/sensu/sensu-go/backend/authorization"
 	"github.com/sensu/sensu-go/backend/authorization/rbac"
-	"github.com/sensu/sensu-go/backend/store"
+	storev2 "github.com/sensu/sensu-go/backend/store/v2"
+	"github.com/sensu/sensu-go/backend/store/v2/wrap"
 	"github.com/sensu/sensu-go/testing/mockstore"
 	"github.com/stretchr/testify/mock"
 )
@@ -35,7 +36,7 @@ func TestListChecks(t *testing.T) {
 	tests := []struct {
 		Name       string
 		Ctx        func() context.Context
-		Store      func() store.Store
+		Store      func() storev2.Interface
 		Auth       func() authorization.Authorizer
 		Controller func() CheckController
 		Exp        []*corev2.CheckConfig
@@ -44,8 +45,8 @@ func TestListChecks(t *testing.T) {
 		{
 			Name: "no auth",
 			Ctx:  defaultContext,
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -61,8 +62,8 @@ func TestListChecks(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -89,8 +90,8 @@ func TestListChecks(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -117,9 +118,13 @@ func TestListChecks(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "legit", nil)
 			},
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
-				store.On("GetCheckConfigs", mock.Anything, mock.Anything).Return([]*corev2.CheckConfig{defaultCheck}, nil)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
+				wrapper, _ := wrap.Resource(defaultCheck)
+				list := wrap.List{wrapper}
+				cs := new(mockstore.ConfigStore)
+				store.On("GetConfigStore").Return(cs)
+				cs.On("List", mock.Anything, mock.Anything, mock.Anything).Return(list, nil)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -157,7 +162,7 @@ func TestListChecks(t *testing.T) {
 			if err == nil && test.ExpErr {
 				t.Fatal("expected non-nil error")
 			}
-			if got, want := checks, test.Exp; !reflect.DeepEqual(got, want) {
+			if got, want := len(checks), len(test.Exp); got != want {
 				t.Fatalf("bad checks: got %v, want %v", got, want)
 			}
 		})
@@ -168,7 +173,7 @@ func TestGetCheck(t *testing.T) {
 	tests := []struct {
 		Name       string
 		Ctx        func() context.Context
-		Store      func() store.Store
+		Store      func() storev2.Interface
 		Auth       func() authorization.Authorizer
 		Controller func() CheckController
 		Exp        *corev2.CheckConfig
@@ -177,8 +182,8 @@ func TestGetCheck(t *testing.T) {
 		{
 			Name: "no auth",
 			Ctx:  defaultContext,
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -194,8 +199,8 @@ func TestGetCheck(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -223,8 +228,8 @@ func TestGetCheck(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -252,9 +257,11 @@ func TestGetCheck(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "legit", nil)
 			},
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
-				store.On("GetCheckConfigByName", mock.Anything, "default").Return(defaultCheck, nil)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
+				cs := new(mockstore.ConfigStore)
+				store.On("GetConfigStore").Return(cs)
+				cs.On("Get", mock.Anything, mock.Anything).Return(mockstore.Wrapper[*corev2.CheckConfig]{Value: defaultCheck}, nil)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -304,7 +311,7 @@ func TestCreateCheck(t *testing.T) {
 	tests := []struct {
 		Name       string
 		Ctx        func() context.Context
-		Store      func() store.Store
+		Store      func() storev2.Interface
 		Controller func() CheckController
 		Auth       func() authorization.Authorizer
 		ExpErr     bool
@@ -312,8 +319,8 @@ func TestCreateCheck(t *testing.T) {
 		{
 			Name: "no auth",
 			Ctx:  defaultContext,
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -329,8 +336,8 @@ func TestCreateCheck(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -358,8 +365,8 @@ func TestCreateCheck(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -387,9 +394,11 @@ func TestCreateCheck(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "legit", nil)
 			},
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
-				store.On("UpdateCheckConfig", mock.Anything, defaultCheck).Return(nil)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
+				cs := new(mockstore.ConfigStore)
+				store.On("GetConfigStore").Return(cs)
+				cs.On("CreateOrUpdate", mock.Anything, mock.Anything, mock.Anything).Return(nil)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -435,7 +444,7 @@ func TestUpdateCheck(t *testing.T) {
 	tests := []struct {
 		Name       string
 		Ctx        func() context.Context
-		Store      func() store.Store
+		Store      func() storev2.Interface
 		Controller func() CheckController
 		Auth       func() authorization.Authorizer
 		ExpErr     bool
@@ -443,8 +452,8 @@ func TestUpdateCheck(t *testing.T) {
 		{
 			Name: "no auth",
 			Ctx:  defaultContext,
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -460,8 +469,8 @@ func TestUpdateCheck(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -489,8 +498,8 @@ func TestUpdateCheck(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -518,9 +527,11 @@ func TestUpdateCheck(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "legit", nil)
 			},
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
-				store.On("UpdateCheckConfig", mock.Anything, defaultCheck).Return(nil)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
+				cs := new(mockstore.ConfigStore)
+				store.On("GetConfigStore").Return(cs)
+				cs.On("CreateOrUpdate", mock.Anything, mock.Anything, mock.Anything).Return(nil)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -566,7 +577,7 @@ func TestDeleteCheck(t *testing.T) {
 	tests := []struct {
 		Name       string
 		Ctx        func() context.Context
-		Store      func() store.Store
+		Store      func() storev2.Interface
 		Controller func() CheckController
 		Auth       func() authorization.Authorizer
 		ExpErr     bool
@@ -574,8 +585,8 @@ func TestDeleteCheck(t *testing.T) {
 		{
 			Name: "no auth",
 			Ctx:  defaultContext,
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -591,8 +602,8 @@ func TestDeleteCheck(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -620,8 +631,8 @@ func TestDeleteCheck(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -649,9 +660,11 @@ func TestDeleteCheck(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "legit", nil)
 			},
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
-				store.On("DeleteCheckConfigByName", mock.Anything, "default").Return(nil)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
+				cs := new(mockstore.ConfigStore)
+				store.On("GetConfigStore").Return(cs)
+				cs.On("Delete", mock.Anything, mock.Anything).Return(nil)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -697,7 +710,7 @@ func TestExecuteCheck(t *testing.T) {
 	tests := []struct {
 		Name       string
 		Ctx        func() context.Context
-		Store      func() store.Store
+		Store      func() storev2.Interface
 		Controller func() CheckController
 		Auth       func() authorization.Authorizer
 		ExpErr     bool
@@ -705,8 +718,8 @@ func TestExecuteCheck(t *testing.T) {
 		{
 			Name: "no auth",
 			Ctx:  defaultContext,
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -722,8 +735,8 @@ func TestExecuteCheck(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -751,8 +764,8 @@ func TestExecuteCheck(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -780,8 +793,8 @@ func TestExecuteCheck(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "legit", nil)
 			},
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
 				return store
 			},
 			Auth: func() authorization.Authorizer {

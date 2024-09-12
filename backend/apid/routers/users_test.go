@@ -10,7 +10,8 @@ import (
 	"testing"
 
 	"github.com/gorilla/mux"
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	corev2 "github.com/sensu/core/v2"
+	corev3 "github.com/sensu/core/v3"
 	"github.com/sensu/sensu-go/backend/apid/actions"
 	"github.com/sensu/sensu-go/backend/store"
 	"github.com/stretchr/testify/mock"
@@ -36,9 +37,9 @@ func (m *mockUserController) CreateOrReplace(ctx context.Context, user *corev2.U
 	return m.Called(ctx, user).Error(0)
 }
 
-func (m *mockUserController) List(ctx context.Context, pred *store.SelectionPredicate) ([]corev2.Resource, error) {
+func (m *mockUserController) List(ctx context.Context, pred *store.SelectionPredicate) ([]corev3.Resource, error) {
 	args := m.Called(ctx, pred)
-	return args.Get(0).([]corev2.Resource), args.Error(1)
+	return args.Get(0).([]corev3.Resource), args.Error(1)
 }
 
 func (m *mockUserController) Get(ctx context.Context, name string) (*corev2.User, error) {
@@ -117,7 +118,7 @@ func TestUsersRouter(t *testing.T) {
 			path:   empty.URIPath(),
 			controllerFunc: func(c *mockUserController) {
 				c.On("List", mock.Anything, mock.AnythingOfType("*store.SelectionPredicate")).
-					Return([]corev2.Resource{empty}, actions.NewErrorf(actions.InternalErr)).
+					Return([]corev3.Resource{empty}, actions.NewErrorf(actions.InternalErr)).
 					Once()
 			},
 			wantStatusCode: http.StatusInternalServerError,
@@ -128,7 +129,7 @@ func TestUsersRouter(t *testing.T) {
 			path:   empty.URIPath(),
 			controllerFunc: func(c *mockUserController) {
 				c.On("List", mock.Anything, mock.AnythingOfType("*store.SelectionPredicate")).
-					Return([]corev2.Resource{fixture}, nil).
+					Return([]corev3.Resource{fixture}, nil).
 					Once()
 			},
 			wantStatusCode: http.StatusOK,
@@ -144,7 +145,7 @@ func TestUsersRouter(t *testing.T) {
 			name:   "it returns 400 if the user to create is not valid",
 			method: http.MethodPost,
 			path:   empty.URIPath(),
-			body:   marshal(fixture),
+			body:   marshalWrapped(fixture),
 			controllerFunc: func(c *mockUserController) {
 				c.On("Create", mock.Anything, mock.Anything).
 					Return(actions.NewErrorf(actions.InvalidArgument)).
@@ -156,7 +157,7 @@ func TestUsersRouter(t *testing.T) {
 			name:   "it returns 500 if the store returns an error while creating a user",
 			method: http.MethodPost,
 			path:   empty.URIPath(),
-			body:   marshal(fixture),
+			body:   marshalWrapped(fixture),
 			controllerFunc: func(c *mockUserController) {
 				c.On("Create", mock.Anything, mock.Anything).
 					Return(actions.NewErrorf(actions.InternalErr)).
@@ -168,7 +169,7 @@ func TestUsersRouter(t *testing.T) {
 			name:   "it returns 201 when a user is successfully created",
 			method: http.MethodPost,
 			path:   empty.URIPath(),
-			body:   marshal(fixture),
+			body:   marshalWrapped(fixture),
 			controllerFunc: func(c *mockUserController) {
 				c.On("Create", mock.Anything, mock.Anything).
 					Return(nil).
@@ -194,7 +195,7 @@ func TestUsersRouter(t *testing.T) {
 			name:   "it returns 500 if the store returns an error while updating a user",
 			method: http.MethodPut,
 			path:   fixture.URIPath(),
-			body:   marshal(fixture),
+			body:   marshalWrapped(fixture),
 			controllerFunc: func(c *mockUserController) {
 				c.On("CreateOrReplace", mock.Anything, mock.Anything).
 					Return(actions.NewErrorf(actions.InternalErr)).
@@ -206,7 +207,7 @@ func TestUsersRouter(t *testing.T) {
 			name:   "it returns 201 when an event is successfully updated",
 			method: http.MethodPut,
 			path:   fixture.URIPath(),
-			body:   marshal(fixture),
+			body:   marshalWrapped(fixture),
 			controllerFunc: func(c *mockUserController) {
 				c.On("CreateOrReplace", mock.Anything, mock.Anything).
 					Return(nil).

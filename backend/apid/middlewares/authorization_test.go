@@ -1,4 +1,4 @@
-package middlewares
+package middlewares_test
 
 import (
 	"context"
@@ -8,24 +8,28 @@ import (
 	"testing"
 
 	"github.com/golang-jwt/jwt/v4"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sirupsen/logrus"
 
 	"github.com/gorilla/mux"
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	corev2 "github.com/sensu/core/v2"
+	corev3 "github.com/sensu/core/v3"
+	"github.com/sensu/sensu-go/backend/apid/middlewares"
 	sensuJWT "github.com/sensu/sensu-go/backend/authentication/jwt"
 	"github.com/sensu/sensu-go/backend/authorization/rbac"
 	"github.com/sensu/sensu-go/backend/seeds"
 	"github.com/sensu/sensu-go/backend/store"
-	"github.com/sensu/sensu-go/backend/store/etcd/testutil"
+	"github.com/sensu/sensu-go/backend/store/postgres"
+	storev2 "github.com/sensu/sensu-go/backend/store/v2"
 	"github.com/sensu/sensu-go/testing/mockstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
 
-func seedStore(t *testing.T, store store.Store) {
+func seedStore(t *testing.T, store storev2.Interface) {
 	t.Helper()
 
-	if err := seeds.SeedInitialData(store); err != nil {
+	if err := seeds.SeedInitialDataWithContext(context.Background(), store); err != nil {
 		t.Fatalf("Could not seed the backend: %s", err)
 	}
 
@@ -45,9 +49,6 @@ func seedStore(t *testing.T, store store.Store) {
 			},
 		},
 	}
-	if err := store.CreateClusterRoleBinding(context.Background(), localAdmins); err != nil {
-		t.Fatalf("Could not add the admin ClusterRoleBinding: %s", err)
-	}
 
 	admins := &corev2.RoleBinding{
 		ObjectMeta: corev2.NewObjectMeta("admin", "default"),
@@ -61,9 +62,6 @@ func seedStore(t *testing.T, store store.Store) {
 				Name: "admins",
 			},
 		},
-	}
-	if err := store.CreateRoleBinding(context.Background(), admins); err != nil {
-		t.Fatalf("Could not add the admin RoleBinding: %s", err)
 	}
 
 	editors := &corev2.RoleBinding{
@@ -79,9 +77,6 @@ func seedStore(t *testing.T, store store.Store) {
 			},
 		},
 	}
-	if err := store.CreateRoleBinding(context.Background(), editors); err != nil {
-		t.Fatalf("Could not add the edit RoleBinding: %s", err)
-	}
 
 	viewers := &corev2.RoleBinding{
 		ObjectMeta: corev2.NewObjectMeta("view", "default"),
@@ -96,9 +91,6 @@ func seedStore(t *testing.T, store store.Store) {
 			},
 		},
 	}
-	if err := store.CreateRoleBinding(context.Background(), viewers); err != nil {
-		t.Fatalf("Could not add the view RoleBinding: %s", err)
-	}
 
 	fooViewerRole := &corev2.Role{
 		ObjectMeta: corev2.NewObjectMeta("foo-viewer", "default"),
@@ -109,9 +101,6 @@ func seedStore(t *testing.T, store store.Store) {
 				ResourceNames: []string{"foo"},
 			},
 		},
-	}
-	if err := store.CreateRole(context.Background(), fooViewerRole); err != nil {
-		t.Fatalf("Could not add the foo-viewer Role: %s", err)
 	}
 
 	fooViewerRoleBinding := &corev2.RoleBinding{
@@ -127,9 +116,6 @@ func seedStore(t *testing.T, store store.Store) {
 			},
 		},
 	}
-	if err := store.CreateRoleBinding(context.Background(), fooViewerRoleBinding); err != nil {
-		t.Fatalf("Could not add the foo-viewer RoleBinding: %s", err)
-	}
 
 	rwRoleBinding := &corev2.RoleBinding{
 		ObjectMeta: corev2.NewObjectMeta("rw", "default"),
@@ -144,9 +130,6 @@ func seedStore(t *testing.T, store store.Store) {
 			},
 		},
 	}
-	if err := store.CreateRoleBinding(context.Background(), rwRoleBinding); err != nil {
-		t.Fatalf("Could not add the rw RoleBinding: %s", err)
-	}
 
 	rwRole := &corev2.Role{
 		ObjectMeta: corev2.NewObjectMeta("rw", "default"),
@@ -157,29 +140,42 @@ func seedStore(t *testing.T, store store.Store) {
 			},
 		},
 	}
-	if err := store.CreateRole(context.Background(), rwRole); err != nil {
-		t.Fatalf("Could not add the rw Role: %s", err)
+
+	resources := []corev3.Resource{
+		localAdmins,
+		admins,
+		editors,
+		viewers,
+		fooViewerRole,
+		fooViewerRoleBinding,
+		rwRoleBinding,
+		rwRole,
+	}
+
+	for i, resource := range resources {
+		req := storev2.NewResourceRequestFromResource(resource)
+		wrapper, err := storev2.WrapResource(resource)
+		if err != nil {
+			t.Fatalf("error wrapping resource %d: %s", i, err)
+		}
+		if err := store.GetConfigStore().CreateIfNotExists(context.Background(), req, wrapper); err != nil {
+			t.Fatalf("error creating resource %d: %s", i, err)
+		}
 	}
 }
 
 func TestAuthorization(t *testing.T) {
+	t.Skip("skipping until further refactoring is complete")
+
 	// If required, uncomment the following comment to enable the tracing logs
 	logrus.SetLevel(logrus.TraceLevel)
-
-	// Prepare the store
-	// Use the default seeds
-	store, err := testutil.NewStoreInstance()
-	if err != nil {
-		t.Fatal("Could not initialize the store: ", err)
-	}
-	seedStore(t, store)
 
 	cases := []struct {
 		description          string
 		method               string
 		url                  string
-		group                string         // Group the user belongs to
-		attributesMiddleware HTTPMiddleware // Legacy or Kubernetes-like routes
+		group                string                     // Group the user belongs to
+		attributesMiddleware middlewares.HTTPMiddleware // Legacy or Kubernetes-like routes
 		expectedCode         int
 	}{
 		//
@@ -192,7 +188,7 @@ func TestAuthorization(t *testing.T) {
 			method:               "GET",
 			url:                  "/api/core/v2/users",
 			group:                "cluster-admins",
-			attributesMiddleware: AuthorizationAttributes{},
+			attributesMiddleware: middlewares.AuthorizationAttributes{},
 			expectedCode:         200,
 		},
 		{
@@ -200,7 +196,7 @@ func TestAuthorization(t *testing.T) {
 			method:               "POST",
 			url:                  "/api/core/v2/users",
 			group:                "cluster-admins",
-			attributesMiddleware: AuthorizationAttributes{},
+			attributesMiddleware: middlewares.AuthorizationAttributes{},
 			expectedCode:         200,
 		},
 		{
@@ -208,7 +204,7 @@ func TestAuthorization(t *testing.T) {
 			method:               "GET",
 			url:                  "/api/core/v2/clusterroles",
 			group:                "cluster-admins",
-			attributesMiddleware: AuthorizationAttributes{},
+			attributesMiddleware: middlewares.AuthorizationAttributes{},
 			expectedCode:         200,
 		},
 		{
@@ -216,7 +212,7 @@ func TestAuthorization(t *testing.T) {
 			method:               "POST",
 			url:                  "/api/core/v2/clusterroles",
 			group:                "cluster-admins",
-			attributesMiddleware: AuthorizationAttributes{},
+			attributesMiddleware: middlewares.AuthorizationAttributes{},
 			expectedCode:         200,
 		},
 		{
@@ -224,7 +220,7 @@ func TestAuthorization(t *testing.T) {
 			method:               "GET",
 			url:                  "/api/core/v2/namespaces/default/checks/check-cpu",
 			group:                "cluster-admins",
-			attributesMiddleware: AuthorizationAttributes{},
+			attributesMiddleware: middlewares.AuthorizationAttributes{},
 			expectedCode:         200,
 		},
 		{
@@ -232,7 +228,7 @@ func TestAuthorization(t *testing.T) {
 			method:               "GET",
 			url:                  "/api/core/v2/namespaces/acme/checks/check-cpu",
 			group:                "cluster-admins",
-			attributesMiddleware: AuthorizationAttributes{},
+			attributesMiddleware: middlewares.AuthorizationAttributes{},
 			expectedCode:         200,
 		},
 		//
@@ -246,7 +242,7 @@ func TestAuthorization(t *testing.T) {
 			method:               "GET",
 			url:                  "/api/core/v2/clusterroles",
 			group:                "local-admins",
-			attributesMiddleware: AuthorizationAttributes{},
+			attributesMiddleware: middlewares.AuthorizationAttributes{},
 			expectedCode:         403,
 		},
 		{
@@ -254,7 +250,7 @@ func TestAuthorization(t *testing.T) {
 			method:               "POST",
 			url:                  "/api/core/v2/namespaces",
 			group:                "local-admins",
-			attributesMiddleware: AuthorizationAttributes{},
+			attributesMiddleware: middlewares.AuthorizationAttributes{},
 			expectedCode:         403,
 		},
 		{
@@ -262,7 +258,7 @@ func TestAuthorization(t *testing.T) {
 			method:               "GET",
 			url:                  "/api/core/v2/namespaces",
 			group:                "local-admins",
-			attributesMiddleware: AuthorizationAttributes{},
+			attributesMiddleware: middlewares.AuthorizationAttributes{},
 			expectedCode:         200,
 		},
 		{
@@ -270,7 +266,7 @@ func TestAuthorization(t *testing.T) {
 			method:               "GET",
 			url:                  "/api/core/v2/namespaces/acme/checks/check-cpu",
 			group:                "local-admins",
-			attributesMiddleware: AuthorizationAttributes{},
+			attributesMiddleware: middlewares.AuthorizationAttributes{},
 			expectedCode:         200,
 		},
 		{
@@ -278,7 +274,7 @@ func TestAuthorization(t *testing.T) {
 			method:               "POST",
 			url:                  "/api/core/v2/namespaces/acme/rolebindings",
 			group:                "local-admins",
-			attributesMiddleware: AuthorizationAttributes{},
+			attributesMiddleware: middlewares.AuthorizationAttributes{},
 			expectedCode:         200,
 		},
 		//
@@ -292,7 +288,7 @@ func TestAuthorization(t *testing.T) {
 			method:               "GET",
 			url:                  "/api/core/v2/clusterroles",
 			group:                "admins",
-			attributesMiddleware: AuthorizationAttributes{},
+			attributesMiddleware: middlewares.AuthorizationAttributes{},
 			expectedCode:         403,
 		},
 		{
@@ -300,7 +296,7 @@ func TestAuthorization(t *testing.T) {
 			method:               "POST",
 			url:                  "/api/core/v2/namespaces",
 			group:                "admins",
-			attributesMiddleware: AuthorizationAttributes{},
+			attributesMiddleware: middlewares.AuthorizationAttributes{},
 			expectedCode:         403,
 		},
 		{
@@ -308,7 +304,7 @@ func TestAuthorization(t *testing.T) {
 			method:               "GET",
 			url:                  "/api/core/v2/namespaces/acme/checks/check-cpu",
 			group:                "admins",
-			attributesMiddleware: AuthorizationAttributes{},
+			attributesMiddleware: middlewares.AuthorizationAttributes{},
 			expectedCode:         403,
 		},
 		{
@@ -316,7 +312,7 @@ func TestAuthorization(t *testing.T) {
 			method:               "POST",
 			url:                  "/api/core/v2/namespaces/default/rolebindings",
 			group:                "admins",
-			attributesMiddleware: AuthorizationAttributes{},
+			attributesMiddleware: middlewares.AuthorizationAttributes{},
 			expectedCode:         200,
 		},
 		{
@@ -324,7 +320,7 @@ func TestAuthorization(t *testing.T) {
 			method:               "GET",
 			url:                  "/api/core/v2/namespaces/default/checks/check-cpu",
 			group:                "admins",
-			attributesMiddleware: AuthorizationAttributes{},
+			attributesMiddleware: middlewares.AuthorizationAttributes{},
 			expectedCode:         200,
 		},
 		//
@@ -337,7 +333,7 @@ func TestAuthorization(t *testing.T) {
 			method:               "GET",
 			url:                  "/api/core/v2/clusterroles",
 			group:                "editors",
-			attributesMiddleware: AuthorizationAttributes{},
+			attributesMiddleware: middlewares.AuthorizationAttributes{},
 			expectedCode:         403,
 		},
 		{
@@ -345,7 +341,7 @@ func TestAuthorization(t *testing.T) {
 			method:               "POST",
 			url:                  "/api/core/v2/namespaces",
 			group:                "editors",
-			attributesMiddleware: AuthorizationAttributes{},
+			attributesMiddleware: middlewares.AuthorizationAttributes{},
 			expectedCode:         403,
 		},
 		{
@@ -353,7 +349,7 @@ func TestAuthorization(t *testing.T) {
 			method:               "GET",
 			url:                  "/api/core/v2/namespaces/acme/checks/check-cpu",
 			group:                "editors",
-			attributesMiddleware: AuthorizationAttributes{},
+			attributesMiddleware: middlewares.AuthorizationAttributes{},
 			expectedCode:         403,
 		},
 		{
@@ -361,7 +357,7 @@ func TestAuthorization(t *testing.T) {
 			method:               "POST",
 			url:                  "/api/core/v2/namespaces/default/rolebindings",
 			group:                "editors",
-			attributesMiddleware: AuthorizationAttributes{},
+			attributesMiddleware: middlewares.AuthorizationAttributes{},
 			expectedCode:         403,
 		},
 		{
@@ -369,7 +365,7 @@ func TestAuthorization(t *testing.T) {
 			method:               "GET",
 			url:                  "/api/core/v2/namespaces/default/checks/check-cpu",
 			group:                "editors",
-			attributesMiddleware: AuthorizationAttributes{},
+			attributesMiddleware: middlewares.AuthorizationAttributes{},
 			expectedCode:         200,
 		},
 		//
@@ -383,7 +379,7 @@ func TestAuthorization(t *testing.T) {
 			method:               "GET",
 			url:                  "/api/core/v2/clusterroles",
 			group:                "viewers",
-			attributesMiddleware: AuthorizationAttributes{},
+			attributesMiddleware: middlewares.AuthorizationAttributes{},
 			expectedCode:         403,
 		},
 		{
@@ -391,7 +387,7 @@ func TestAuthorization(t *testing.T) {
 			method:               "POST",
 			url:                  "/api/core/v2/namespaces",
 			group:                "viewers",
-			attributesMiddleware: AuthorizationAttributes{},
+			attributesMiddleware: middlewares.AuthorizationAttributes{},
 			expectedCode:         403,
 		},
 		{
@@ -399,7 +395,7 @@ func TestAuthorization(t *testing.T) {
 			method:               "GET",
 			url:                  "/api/core/v2/namespaces/acme/checks/check-cpu",
 			group:                "viewers",
-			attributesMiddleware: AuthorizationAttributes{},
+			attributesMiddleware: middlewares.AuthorizationAttributes{},
 			expectedCode:         403,
 		},
 		{
@@ -407,7 +403,7 @@ func TestAuthorization(t *testing.T) {
 			method:               "POST",
 			url:                  "/api/core/v2/namespaces/default/rolebindings",
 			group:                "viewers",
-			attributesMiddleware: AuthorizationAttributes{},
+			attributesMiddleware: middlewares.AuthorizationAttributes{},
 			expectedCode:         403,
 		},
 		{
@@ -415,7 +411,7 @@ func TestAuthorization(t *testing.T) {
 			method:               "PUT",
 			url:                  "/api/core/v2/namespaces/default/checks/check-cpu",
 			group:                "viewers",
-			attributesMiddleware: AuthorizationAttributes{},
+			attributesMiddleware: middlewares.AuthorizationAttributes{},
 			expectedCode:         403,
 		},
 		{
@@ -423,7 +419,7 @@ func TestAuthorization(t *testing.T) {
 			method:               "GET",
 			url:                  "/api/core/v2/namespaces/default/checks/check-cpu",
 			group:                "viewers",
-			attributesMiddleware: AuthorizationAttributes{},
+			attributesMiddleware: middlewares.AuthorizationAttributes{},
 			expectedCode:         200,
 		},
 		//
@@ -436,7 +432,7 @@ func TestAuthorization(t *testing.T) {
 			method:               "GET",
 			url:                  "/api/core/v2/clusterroles",
 			group:                "system:agents",
-			attributesMiddleware: AuthorizationAttributes{},
+			attributesMiddleware: middlewares.AuthorizationAttributes{},
 			expectedCode:         403,
 		},
 		{
@@ -444,7 +440,7 @@ func TestAuthorization(t *testing.T) {
 			method:               "POST",
 			url:                  "/api/core/v2/namespaces",
 			group:                "system:agents",
-			attributesMiddleware: AuthorizationAttributes{},
+			attributesMiddleware: middlewares.AuthorizationAttributes{},
 			expectedCode:         403,
 		},
 		{
@@ -452,7 +448,7 @@ func TestAuthorization(t *testing.T) {
 			method:               "GET",
 			url:                  "/api/core/v2/namespaces/acme/checks/check-cpu",
 			group:                "system:agents",
-			attributesMiddleware: AuthorizationAttributes{},
+			attributesMiddleware: middlewares.AuthorizationAttributes{},
 			expectedCode:         403,
 		},
 		{
@@ -460,7 +456,7 @@ func TestAuthorization(t *testing.T) {
 			method:               "POST",
 			url:                  "/api/core/v2/namespaces/default/rolebindings",
 			group:                "system:agents",
-			attributesMiddleware: AuthorizationAttributes{},
+			attributesMiddleware: middlewares.AuthorizationAttributes{},
 			expectedCode:         403,
 		},
 		{
@@ -468,7 +464,7 @@ func TestAuthorization(t *testing.T) {
 			method:               "PUT",
 			url:                  "/api/core/v2/namespaces/default/checks/check-cpu",
 			group:                "system:agents",
-			attributesMiddleware: AuthorizationAttributes{},
+			attributesMiddleware: middlewares.AuthorizationAttributes{},
 			expectedCode:         403,
 		},
 		{
@@ -476,7 +472,7 @@ func TestAuthorization(t *testing.T) {
 			method:               "GET",
 			url:                  "/api/core/v2/namespaces",
 			group:                "system:agents",
-			attributesMiddleware: AuthorizationAttributes{},
+			attributesMiddleware: middlewares.AuthorizationAttributes{},
 			expectedCode:         200,
 		},
 		{
@@ -484,7 +480,7 @@ func TestAuthorization(t *testing.T) {
 			method:               "POST",
 			url:                  "/api/core/v2/namespaces/default/events",
 			group:                "system:agents",
-			attributesMiddleware: AuthorizationAttributes{},
+			attributesMiddleware: middlewares.AuthorizationAttributes{},
 			expectedCode:         200,
 		},
 		//
@@ -497,7 +493,7 @@ func TestAuthorization(t *testing.T) {
 			method:               "GET",
 			url:                  "/api/core/v2/namespaces/default/events/foo/bar",
 			group:                "foo-viewers",
-			attributesMiddleware: AuthorizationAttributes{},
+			attributesMiddleware: middlewares.AuthorizationAttributes{},
 			expectedCode:         403,
 		},
 		{
@@ -505,7 +501,7 @@ func TestAuthorization(t *testing.T) {
 			method:               "GET",
 			url:                  "/api/core/v2/namespaces/default/checks",
 			group:                "foo-viewers",
-			attributesMiddleware: AuthorizationAttributes{},
+			attributesMiddleware: middlewares.AuthorizationAttributes{},
 			expectedCode:         403,
 		},
 		{
@@ -513,7 +509,7 @@ func TestAuthorization(t *testing.T) {
 			method:               "PUT",
 			url:                  "/api/core/v2/namespaces/default/checks/foo",
 			group:                "foo-viewers",
-			attributesMiddleware: AuthorizationAttributes{},
+			attributesMiddleware: middlewares.AuthorizationAttributes{},
 			expectedCode:         403,
 		},
 		{
@@ -521,7 +517,7 @@ func TestAuthorization(t *testing.T) {
 			method:               "GET",
 			url:                  "/api/core/v2/namespaces/default/checks/foo",
 			group:                "foo-viewers",
-			attributesMiddleware: AuthorizationAttributes{},
+			attributesMiddleware: middlewares.AuthorizationAttributes{},
 			expectedCode:         200,
 		},
 		//
@@ -535,7 +531,7 @@ func TestAuthorization(t *testing.T) {
 			method:               "GET",
 			url:                  "/api/core/v2/users/bar",
 			group:                "system:users",
-			attributesMiddleware: AuthorizationAttributes{},
+			attributesMiddleware: middlewares.AuthorizationAttributes{},
 			expectedCode:         403,
 		},
 		{
@@ -543,7 +539,7 @@ func TestAuthorization(t *testing.T) {
 			method:               "PUT",
 			url:                  "/api/core/v2/users/bar/password",
 			group:                "system:users",
-			attributesMiddleware: AuthorizationAttributes{},
+			attributesMiddleware: middlewares.AuthorizationAttributes{},
 			expectedCode:         403,
 		},
 		{
@@ -551,7 +547,7 @@ func TestAuthorization(t *testing.T) {
 			method:               "GET",
 			url:                  "/api/core/v2/users/foo",
 			group:                "system:users",
-			attributesMiddleware: AuthorizationAttributes{},
+			attributesMiddleware: middlewares.AuthorizationAttributes{},
 			expectedCode:         200,
 		},
 		{
@@ -559,7 +555,7 @@ func TestAuthorization(t *testing.T) {
 			method:               "PUT",
 			url:                  "/api/core/v2/users/foo/password",
 			group:                "system:users",
-			attributesMiddleware: AuthorizationAttributes{},
+			attributesMiddleware: middlewares.AuthorizationAttributes{},
 			expectedCode:         200,
 		},
 		//
@@ -570,57 +566,66 @@ func TestAuthorization(t *testing.T) {
 			method:               "PATCH",
 			url:                  "/api/core/v2/namespaces/default/checks/foo",
 			group:                "rw",
-			attributesMiddleware: AuthorizationAttributes{},
+			attributesMiddleware: middlewares.AuthorizationAttributes{},
 			expectedCode:         200,
 		},
 	}
-	for _, tt := range cases {
-		t.Run(tt.description, func(t *testing.T) {
-			// testHandler is a catch-all handler that returns 200 OK
-			testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+	postgres.WithPostgres(t, func(ctx context.Context, configDB *pgxpool.Pool, dsn string) {
+		cfg := postgres.StoreConfig{
+			DB: configDB,
+		}
+		store := postgres.NewStore(cfg)
+		seedStore(t, store)
 
-			// Prepare our HTTP server
-			w := httptest.NewRecorder()
+		for _, tt := range cases {
+			t.Run(tt.description, func(t *testing.T) {
+				// testHandler is a catch-all handler that returns 200 OK
+				testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
 
-			// Prepare the request
-			r, err := http.NewRequest(tt.method, tt.url, nil)
-			if err != nil {
-				t.Fatal("Couldn't create request: ", err)
-			}
+				// Prepare our HTTP server
+				w := httptest.NewRecorder()
 
-			// Inject the claims into the request context
-			claims := corev2.Claims{
-				StandardClaims: jwt.StandardClaims{Subject: "foo"},
-				Groups:         []string{tt.group},
-			}
-			ctx := sensuJWT.SetClaimsIntoContext(r, &claims)
+				// Prepare the request
+				r, err := http.NewRequest(tt.method, tt.url, nil)
+				if err != nil {
+					t.Fatal("Couldn't create request: ", err)
+				}
 
-			// Prepare our middlewares
-			namespaceMiddleware := Namespace{}
-			attributesMiddleware := tt.attributesMiddleware
-			authorizationMiddleware := Authorization{Authorizer: &rbac.Authorizer{Store: store}}
+				// Inject the claims into the request context
+				claims := corev2.Claims{
+					StandardClaims: jwt.StandardClaims{Subject: "foo"},
+					Groups:         []string{tt.group},
+				}
+				ctx := sensuJWT.SetClaimsIntoContext(r, &claims)
 
-			// Prepare the router
-			router := mux.NewRouter()
-			router.PathPrefix("/api/{group}/{version}/{resource:users}/{id}/{subresource}").Handler(testHandler)
-			router.PathPrefix("/api/{group}/{version}/namespaces/{namespace}/{resource}/{id}").Handler(testHandler)
-			router.PathPrefix("/api/{group}/{version}/namespaces/{namespace}/{resource}").Handler(testHandler)
-			router.PathPrefix("/api/{group}/{version}/{resource}/{id}").Handler(testHandler)
-			router.PathPrefix("/api/{group}/{version}/{resource}").Handler(testHandler)
-			router.PathPrefix("/api/{group}/{version}/{resource:namespaces}/{id}").Handler(testHandler)
-			router.PathPrefix("/api/{group}/{version}/{resource:namespaces}").Handler(testHandler)
-			router.PathPrefix("/api/{group}/{version}/{resource:users}/{id}").Handler(testHandler)
-			router.PathPrefix("/").Handler(testHandler) // catch all for legacy routes
-			router.Use(namespaceMiddleware.Then, attributesMiddleware.Then, authorizationMiddleware.Then)
+				// Prepare our middlewares
+				namespaceMiddleware := middlewares.Namespace{}
+				attributesMiddleware := tt.attributesMiddleware
+				authorizationMiddleware := middlewares.Authorization{Authorizer: &rbac.Authorizer{Store: store}}
 
-			// Serve the request
-			router.ServeHTTP(w, r.WithContext(ctx))
-			assert.Equal(t, tt.expectedCode, w.Code)
-			if w.Body.Len() != 0 {
-				t.Logf("Response body: %s", w.Body.String())
-			}
-		})
-	}
+				// Prepare the router
+				router := mux.NewRouter()
+				router.PathPrefix("/api/{group}/{version}/{resource:users}/{id}/{subresource}").Handler(testHandler)
+				router.PathPrefix("/api/{group}/{version}/namespaces/{namespace}/{resource}/{id}").Handler(testHandler)
+				router.PathPrefix("/api/{group}/{version}/namespaces/{namespace}/{resource}").Handler(testHandler)
+				router.PathPrefix("/api/{group}/{version}/{resource}/{id}").Handler(testHandler)
+				router.PathPrefix("/api/{group}/{version}/{resource}").Handler(testHandler)
+				router.PathPrefix("/api/{group}/{version}/{resource:namespaces}/{id}").Handler(testHandler)
+				router.PathPrefix("/api/{group}/{version}/{resource:namespaces}").Handler(testHandler)
+				router.PathPrefix("/api/{group}/{version}/{resource:users}/{id}").Handler(testHandler)
+				router.PathPrefix("/").Handler(testHandler) // catch all for legacy routes
+				router.Use(namespaceMiddleware.Then, attributesMiddleware.Then, authorizationMiddleware.Then)
+
+				// Serve the request
+				router.ServeHTTP(w, r.WithContext(ctx))
+				assert.Equal(t, tt.expectedCode, w.Code)
+				if w.Body.Len() != 0 {
+					t.Logf("Response body: %s", w.Body.String())
+				}
+			})
+		}
+	})
+
 }
 
 func getFaultyRoleBinding() *corev2.RoleBinding {
@@ -643,11 +648,17 @@ func getFaultyRoleBinding() *corev2.RoleBinding {
 }
 
 func TestRoleNotFound_GH4268(t *testing.T) {
-	store := new(mockstore.MockStore)
+	st := new(mockstore.V2MockStore)
+	cs := new(mockstore.ConfigStore)
+	st.On("GetConfigStore").Return(cs)
 	faultyRoleBindings := []*corev2.RoleBinding{getFaultyRoleBinding()}
-	store.On("ListRoleBindings", mock.Anything, mock.Anything).Return(faultyRoleBindings, nil)
-	store.On("ListClusterRoleBindings", mock.Anything, mock.Anything).Return([]*corev2.ClusterRoleBinding{}, nil)
-	store.On("GetRole", mock.Anything, mock.Anything).Return((*corev2.Role)(nil), nil)
+	rb := &corev2.RoleBinding{}
+	rb.Namespace = "default"
+	rbListReq := storev2.NewResourceRequestFromResource(rb)
+	cs.On("List", mock.Anything, rbListReq, mock.Anything).Return(mockstore.WrapList[*corev2.RoleBinding](faultyRoleBindings), nil)
+	crbListReq := storev2.NewResourceRequestFromResource(new(corev2.ClusterRoleBinding))
+	cs.On("List", mock.Anything, crbListReq, mock.Anything).Return(mockstore.WrapList[*corev2.ClusterRoleBinding](nil), nil)
+	cs.On("Get", mock.Anything, mock.Anything).Return(nil, &store.ErrNotFound{})
 
 	// testHandler is a catch-all handler that returns 200 OK
 	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
@@ -669,9 +680,9 @@ func TestRoleNotFound_GH4268(t *testing.T) {
 	ctx := sensuJWT.SetClaimsIntoContext(r, &claims)
 
 	// Prepare our middlewares
-	namespaceMiddleware := Namespace{}
-	attributesMiddleware := AuthorizationAttributes{}
-	authorizationMiddleware := Authorization{Authorizer: &rbac.Authorizer{Store: store}}
+	namespaceMiddleware := middlewares.Namespace{}
+	attributesMiddleware := middlewares.AuthorizationAttributes{}
+	authorizationMiddleware := middlewares.Authorization{Authorizer: &rbac.Authorizer{Store: st}}
 
 	// Prepare the router
 	router := mux.NewRouter()

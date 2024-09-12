@@ -1,11 +1,7 @@
 package tessend
 
 import (
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
-)
-
-const (
-	licenseStorePath = "/sensu.io/api/enterprise/licensing/v2/license"
+	corev2 "github.com/sensu/core/v2"
 )
 
 var (

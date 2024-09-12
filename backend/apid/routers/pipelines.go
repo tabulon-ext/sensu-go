@@ -2,23 +2,21 @@ package routers
 
 import (
 	"github.com/gorilla/mux"
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	corev2 "github.com/sensu/core/v2"
+	corev3 "github.com/sensu/core/v3"
 	"github.com/sensu/sensu-go/backend/apid/handlers"
-	"github.com/sensu/sensu-go/backend/store"
+	storev2 "github.com/sensu/sensu-go/backend/store/v2"
 )
 
 // PipelinesRouter handles requests for /pipelines
 type PipelinesRouter struct {
-	handlers handlers.Handlers
+	store storev2.Interface
 }
 
 // NewPipelineRouter instantiates new router for controlling pipeline resources
-func NewPipelinesRouter(store store.ResourceStore) *PipelinesRouter {
+func NewPipelinesRouter(store storev2.Interface) *PipelinesRouter {
 	return &PipelinesRouter{
-		handlers: handlers.Handlers{
-			Resource: &corev2.Pipeline{},
-			Store:    store,
-		},
+		store: store,
 	}
 }
 
@@ -29,11 +27,13 @@ func (r *PipelinesRouter) Mount(parent *mux.Router) {
 		PathPrefix: "/namespaces/{namespace}/{resource:pipelines}",
 	}
 
-	routes.Get(r.handlers.GetResource)
-	routes.List(r.handlers.ListResources, corev2.PipelineFields)
-	routes.ListAllNamespaces(r.handlers.ListResources, "/{resource:pipelines}", corev2.PipelineFields)
-	routes.Patch(r.handlers.PatchResource)
-	routes.Post(r.handlers.CreateResource)
-	routes.Put(r.handlers.CreateOrUpdateResource)
-	routes.Del(r.handlers.DeleteResource)
+	handlers := handlers.NewHandlers[*corev2.Pipeline](r.store)
+
+	routes.Get(handlers.GetResource)
+	routes.List(handlers.ListResources, corev3.PipelineFields)
+	routes.ListAllNamespaces(handlers.ListResources, "/{resource:pipelines}", corev3.PipelineFields)
+	routes.Patch(handlers.PatchResource)
+	routes.Post(handlers.CreateResource)
+	routes.Put(handlers.CreateOrUpdateResource)
+	routes.Del(handlers.DeleteResource)
 }

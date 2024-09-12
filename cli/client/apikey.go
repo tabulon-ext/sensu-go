@@ -3,42 +3,47 @@ package client
 import (
 	"encoding/json"
 	"net/http"
-	"strings"
 
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	corev2 "github.com/sensu/core/v2"
+	"github.com/sensu/core/v3/types"
 )
 
 // PostAPIKey sends a POST request with obj as the payload to the given path
 // and returns the location header of the key.
-func (client *RestClient) PostAPIKey(path string, obj interface{}) (string, error) {
-	res, err := client.R().SetBody(obj).Post(path)
+func (client *RestClient) PostAPIKey(path string, obj interface{}) (corev2.APIKeyResponse, error) {
+	var response corev2.APIKeyResponse
+
+	w := types.WrapResource(obj)
+	res, err := client.R().SetBody(w).Post(path)
 	if err != nil {
-		return "", err
+		return response, err
 	}
 
 	if res.StatusCode() >= 400 {
-		return "", UnmarshalError(res)
+		return response, UnmarshalError(res)
 	}
 
-	return res.Header().Get("Location"), nil
+	if err := json.Unmarshal(res.Body(), &response); err != nil {
+		return response, err
+	}
+
+	return response, nil
 }
 
 // CreateAPIKey creates a new api-key.
-func (client *RestClient) CreateAPIKey(username string) (string, error) {
+func (client *RestClient) CreateAPIKey(name, username string, hash []byte) (corev2.APIKeyResponse, error) {
 
 	apikey := &corev2.APIKey{
+		ObjectMeta: corev2.ObjectMeta{
+			Name:        name,
+			Labels:      map[string]string{},
+			Annotations: map[string]string{},
+		},
 		Username: username,
+		Hash:     hash,
 	}
 
-	location, err := client.PostAPIKey(apikey.URIPath(), apikey)
-	if err != nil {
-		return "", err
-	}
-
-	location_arr := strings.Split(location, "/")
-	result := location_arr[len(location_arr)-1]
-
-	return result, nil
+	return client.PostAPIKey(apikey.URIPath(), apikey)
 }
 
 // DeleteAPIKey deletes an api-key.
@@ -65,8 +70,15 @@ func (client *RestClient) ListAPIKeys(options *ListOptions, header *http.Header)
 		return nil, UnmarshalError(resp)
 	}
 
-	var result []corev2.APIKey
-	err = json.Unmarshal(resp.Body(), &result)
+	var wrapped []types.Wrapper
+	err = json.Unmarshal(resp.Body(), &wrapped)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]corev2.APIKey, len(wrapped))
+	for i := range wrapped {
+		result[i] = *wrapped[i].Value.(*corev2.APIKey)
+	}
 	return result, err
 }
 

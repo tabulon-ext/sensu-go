@@ -1,5 +1,191 @@
 # automatically generated file, do not edit!
 
+"""
+AssetBuild defines an individual asset that an asset can install as a
+dependency for a check, handler, mutator, etc.
+"""
+type CoreV2AssetBuild {
+  
+  """URL is the location of the asset"""
+  url: String!
+  
+  """Sha512 is the SHA-512 checksum of the asset"""
+  sha512: String!
+  
+  """
+  Filters are a collection of sensu queries, used by the system to
+  determine if the asset should be installed. If more than one filter is
+  present the queries are joined by the "AND" operator.
+  """
+  filters: [String!]!
+  
+  """
+  Headers is a collection of key/value string pairs used as HTTP headers
+  for asset retrieval.
+  """
+  headers: JSON!
+}
+
+"""ClusterRole applies to all namespaces within a cluster."""
+type CoreV2ClusterRole {
+  rules: [CoreV2Rule!]!
+  
+  """Metadata contains name, namespace, labels and annotations"""
+  metadata: ObjectMeta!
+}
+
+"""
+ClusterRoleBinding grants the permissions defined in a ClusterRole referenced
+to a user or a set of users
+"""
+type CoreV2ClusterRoleBinding {
+  
+  """Subjects holds references to the objects the ClusterRole applies to"""
+  subjects: [CoreV2Subject!]!
+  
+  """RoleRef references a ClusterRole in the current namespace"""
+  role_ref: CoreV2RoleRef!
+  
+  """Metadata contains name, namespace, labels and annotations"""
+  metadata: ObjectMeta!
+}
+
+"""Deregistration contains configuration for Sensu entity de-registration."""
+type CoreV2Deregistration {
+  handler: String!
+}
+
+"""
+Network contains information about the system network interfaces
+that the Agent process is running on, used for additional Entity
+context.
+"""
+type CoreV2Network {
+  interfaces: [CoreV2NetworkInterface!]!
+}
+
+"""
+NetworkInterface contains information about a system network
+interface.
+"""
+type CoreV2NetworkInterface {
+  name: String!
+  mac: String!
+  addresses: [String!]!
+}
+
+"""Pipeline represents a named collection of pipeline workflows."""
+type CoreV2Pipeline {
+  
+  """
+  Metadata contains the name, namespace, labels and annotations of the
+  pipeline.
+  """
+  metadata: ObjectMeta!
+  
+  """Workflows contains one or more pipeline workflows."""
+  workflows: [CoreV2PipelineWorkflow]!
+}
+
+"""
+PipelineWorkflow represents a workflow of filters, mutator, & handler to use
+in a pipeline.
+"""
+type CoreV2PipelineWorkflow {
+  
+  """Name is a descriptive name of the pipeline workflow."""
+  name: String!
+  
+  """
+  Filters contains one or more references to a resource to use as an event
+  filter.
+  """
+  filters: [CoreV2ResourceReference]!
+  
+  """Mutator contains a reference to a resource to use as an event mutator."""
+  mutator: CoreV2ResourceReference
+  
+  """Handler contains a reference to a resource to use as an event handler."""
+  handler: CoreV2ResourceReference
+}
+
+"""Process contains information about a local process."""
+type CoreV2Process {
+  name: String!
+}
+
+"""ResourceReference represents a reference to another resource."""
+type CoreV2ResourceReference {
+  
+  """Name is the name of the resource to reference."""
+  name: String!
+  
+  """Type is the name of the data type of the resource to reference."""
+  type: String!
+  
+  """APIVersion is the API version of the resource to reference."""
+  api_version: String!
+}
+
+"""Role applies only to a single namespace."""
+type CoreV2Role {
+  rules: [CoreV2Rule!]!
+  
+  """Metadata contains name, namespace, labels and annotations"""
+  metadata: ObjectMeta!
+}
+
+"""
+RoleBinding grants the permissions defined in a Role referenced to a user or
+a set of users
+"""
+type CoreV2RoleBinding {
+  
+  """Subjects holds references to the objects the Role applies to"""
+  subjects: [CoreV2Subject!]!
+  
+  """RoleRef references a Role in the current namespace"""
+  role_ref: CoreV2RoleRef!
+  
+  """Metadata contains name, namespace, labels and annotations"""
+  metadata: ObjectMeta!
+}
+
+"""RoleRef maps groups to Roles or ClusterRoles."""
+type CoreV2RoleRef {
+  
+  """Type of role being referenced."""
+  type: String!
+  
+  """Name of the resource being referenced"""
+  name: String!
+}
+
+"""Rule holds information that describes an action that can be taken"""
+type CoreV2Rule {
+  
+  """
+  Verbs is a list of verbs that apply to all of the listed resources for
+  this rule. These include "get", "list", "watch", "create", "update",
+  "delete".
+  TODO: add support for "patch" (this is expensive and should be delayed
+  until a further release). TODO: add support for "watch" (via websockets)
+  """
+  verbs: [String!]!
+  
+  """
+  Resources is a list of resources that this rule applies to. "*"
+  represents all resources.
+  """
+  resources: [String!]!
+  
+  """
+  ResourceNames is an optional list of resource names that the rule applies
+  to.
+  """
+  resource_names: [String!]!
+}
+
 """A Secret is a secret specification."""
 type CoreV2Secret {
   
@@ -8,4 +194,47 @@ type CoreV2Secret {
   
   """Secret is the name of the Sensu secret resource."""
   secret: String!
+}
+
+type CoreV2Subject {
+  
+  """Type of object referenced (user or group)"""
+  type: String!
+  
+  """Name of the referenced object"""
+  name: String!
+}
+
+"""
+System contains information about the system that the Agent process
+is running on, used for additional Entity context.
+"""
+type CoreV2System {
+  hostname: String!
+  os: String!
+  platform: String!
+  platform_family: String!
+  platform_version: String!
+  network: CoreV2Network!
+  arch: String!
+  arm_version: Int!
+  
+  """
+  LibCType indicates the type of libc the agent has access to (glibc, musl,
+  etc)
+  """
+  libc_type: String!
+  
+  """VMSystem indicates the VM system of the agent (kvm, vbox, etc)"""
+  vm_system: String!
+  
+  """VMRole indicates the VM role of the agent (host/guest)"""
+  vm_role: String!
+  
+  """CloudProvider indicates the public cloud the agent is running on."""
+  cloud_provider: String!
+  float_type: String!
+  
+  """Processes contains information about the local processes on the agent."""
+  processes: [CoreV2Process]!
 }

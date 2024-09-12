@@ -12,9 +12,7 @@ import (
 
 	time "github.com/echlebek/timeproxy"
 	jwt "github.com/golang-jwt/jwt/v4"
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
-	"github.com/sensu/sensu-go/backend/store"
-	"github.com/sensu/sensu-go/types"
+	corev2 "github.com/sensu/core/v2"
 	utilbytes "github.com/sensu/sensu-go/util/bytes"
 )
 
@@ -25,12 +23,14 @@ const (
 	IssuerURLKey key = iota
 )
 
+const Name = "jwt"
+
 var (
-	defaultExpiration = time.Minute * 5
-	secret            []byte
-	privateKey        *ecdsa.PrivateKey
-	publicKey         *ecdsa.PublicKey
-	signingMethod     jwt.SigningMethod
+	defaultExpiration	= time.Minute * 5
+	secret			[]byte
+	privateKey		*ecdsa.PrivateKey
+	publicKey		*ecdsa.PublicKey
+	signingMethod		jwt.SigningMethod
 )
 
 func init() {
@@ -87,11 +87,11 @@ func NewClaims(user *corev2.User) (*corev2.Claims, error) {
 
 	claims := &corev2.Claims{
 		StandardClaims: jwt.StandardClaims{
-			ExpiresAt: time.Now().Add(defaultExpiration).Unix(),
-			Id:        jti,
-			Subject:   user.Username,
+			ExpiresAt:	time.Now().Add(defaultExpiration).Unix(),
+			Id:		jti,
+			Subject:	user.Username,
 		},
-		Groups: user.Groups,
+		Groups:	user.Groups,
 	}
 	return claims, nil
 }
@@ -181,22 +181,14 @@ func LoadKeyPair(privatePath, publicPath string) error {
 	return nil
 }
 
-// InitSecret initializes and retrieves the secret for our signing tokens
-func InitSecret(store store.Store) error {
-	// Retrieve the secret
-	if s, err := store.GetJWTSecret(); err != nil {
-		return err
-	} else {
-		// Set the secret so it's available accross the package
-		secret = s
-	}
-
-	return nil
+// SetSecret does something incredibly dirty - sets a global variable.
+func SetSecret(s []byte) {
+	secret = s
 }
 
 // parseToken takes a signed token and parse it to verify its integrity
 func parseToken(tokenString string) (*jwt.Token, error) {
-	t, err := jwt.ParseWithClaims(tokenString, &types.Claims{}, func(token *jwt.Token) (interface{}, error) {
+	t, err := jwt.ParseWithClaims(tokenString, &corev2.Claims{}, func(token *jwt.Token) (interface{}, error) {
 		if token.Header["alg"] == jwt.SigningMethodHS256.Alg() {
 			// Validate the signing method used
 			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
@@ -301,7 +293,7 @@ func ValidateToken(tokenString string) (*jwt.Token, error) {
 	if token == nil {
 		return nil, err
 	}
-	if _, ok := token.Claims.(*types.Claims); ok && token.Valid {
+	if _, ok := token.Claims.(*corev2.Claims); ok && token.Valid {
 		return token, nil
 	}
 	return nil, err

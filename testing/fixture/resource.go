@@ -3,7 +3,7 @@ package fixture
 import (
 	"fmt"
 
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	corev2 "github.com/sensu/core/v2"
 )
 
 // GetObjectMeta ...
@@ -38,4 +38,16 @@ func (f *Resource) Validate() error {
 
 func (*Resource) RBACName() string {
 	return "resource"
+}
+
+func (f *Resource) GetMetadata() *corev2.ObjectMeta {
+	return &f.ObjectMeta
+}
+
+func (f *Resource) SetMetadata(meta *corev2.ObjectMeta) {
+	f.ObjectMeta = *meta
+}
+
+func (f *Resource) StoreName() string {
+	return "resources"
 }

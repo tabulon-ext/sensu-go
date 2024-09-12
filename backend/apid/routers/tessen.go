@@ -2,10 +2,13 @@ package routers
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 
 	"github.com/gorilla/mux"
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	corev2 "github.com/sensu/core/v2"
+	"github.com/sensu/sensu-go/backend/apid/handlers"
+	"github.com/sensu/sensu-go/backend/apid/request"
 )
 
 // TessenController represents the controller needs of the TessenRouter.
@@ -37,19 +40,20 @@ func (r *TessenRouter) Mount(parent *mux.Router) {
 	routes.Path("", r.createOrUpdate).Methods(http.MethodPut)
 }
 
-func (r *TessenRouter) createOrUpdate(req *http.Request) (interface{}, error) {
-	obj := &corev2.TessenConfig{}
-	if err := UnmarshalBody(req, &obj); err != nil {
-		return nil, err
+func (r *TessenRouter) createOrUpdate(req *http.Request) (handlers.HandlerResponse, error) {
+	var response handlers.HandlerResponse
+	obj, err := request.Resource[*corev2.TessenConfig](req)
+	if err != nil {
+		return response, err
 	}
 
-	err := r.controller.CreateOrUpdate(req.Context(), obj)
-	return obj, err
+	err = r.controller.CreateOrUpdate(req.Context(), obj)
+	response.Resource = obj
+	return response, err
 }
 
-func (r *TessenRouter) get(req *http.Request) (interface{}, error) {
-	obj, err := r.controller.Get(req.Context())
-	return obj, err
+func (r *TessenRouter) get(req *http.Request) (handlers.HandlerResponse, error) {
+	return responseWrap(r.controller.Get(req.Context()))
 }
 
 // TessenMetricController represents the controller needs of the TessenMetricRouter.
@@ -79,12 +83,13 @@ func (r *TessenMetricRouter) Mount(parent *mux.Router) {
 	routes.Path("", r.publish).Methods(http.MethodPost)
 }
 
-func (r *TessenMetricRouter) publish(req *http.Request) (interface{}, error) {
-	obj := []corev2.MetricPoint{}
-	if err := UnmarshalBody(req, &obj); err != nil {
-		return nil, err
+func (r *TessenMetricRouter) publish(req *http.Request) (handlers.HandlerResponse, error) {
+	var obj []corev2.MetricPoint
+	var response handlers.HandlerResponse
+	if err := json.NewDecoder(req.Body).Decode(&obj); err != nil {
+		return response, err
 	}
 
 	err := r.controller.Publish(req.Context(), obj)
-	return obj, err
+	return response, err
 }

@@ -37,14 +37,15 @@ Sensu Go installer packages are available for a number of computing
 platforms (e.g. Debian/Ubuntu, RHEL/Centos, etc), but the easiest way
 to get started is with the official Docker image, sensu/sensu.
 
-See the [installation documentation](https://docs.sensu.io/sensu-go/latest/operations/deploy-sensu/install-sensu/) to get started.
+See the [installation documentation](https://docs.sensu.io/sensu-go/latest/operations/deploy-sensu/install-sensu/)
+to get started with one of Sensu's [supported packages](https://docs.sensu.io/sensu-go/latest/platforms/).
 
 **NOTE**: Starting with Sensu Go version 6.0, for instances built from source, the web UI is now a [standalone product](https://github.com/sensu/web) — it is no longer included with the Sensu backend. To build the web UI from source, use the [installation instructions](https://github.com/sensu/web/blob/master/INSTALL.md) in the Sensu Go Web repository.
 
 ### Building from source
 
 The various components of Sensu Go can be manually built from this repository.
-You will first need [Go >= 1.13](https://golang.org/doc/install#install)
+You will first need [Go >= 1.18](https://golang.org/doc/install#install)
 installed. Then, you should clone this repository **outside** of the GOPATH
 since Sensu Go uses [Go Modules](https://github.com/golang/go/wiki/Modules):
 ```

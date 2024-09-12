@@ -16,12 +16,12 @@ import (
 	"github.com/sensu/sensu-go/cli"
 	"github.com/sensu/sensu-go/command"
 	"github.com/sensu/sensu-go/system"
-	"github.com/sensu/sensu-go/types"
+	"github.com/sensu/core/v3/types"
 	"github.com/sensu/sensu-go/util/environment"
 	sensupath "github.com/sensu/sensu-go/util/path"
 
 	goversion "github.com/hashicorp/go-version"
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	corev2 "github.com/sensu/core/v2"
 	bolt "go.etcd.io/bbolt"
 )
 
@@ -47,6 +47,20 @@ type CommandManager struct {
 type CommandPlugin struct {
 	Alias string       `json:"alias"`
 	Asset corev2.Asset `json:"asset"`
+}
+
+func (p *CommandPlugin) GetMetadata() *corev2.ObjectMeta {
+	return &corev2.ObjectMeta{
+		Name:        p.Alias,
+		Labels:      make(map[string]string),
+		Annotations: make(map[string]string),
+	}
+}
+
+func (p *CommandPlugin) SetMetadata(*corev2.ObjectMeta) {}
+
+func (p *CommandPlugin) StoreName() string {
+	return ""
 }
 
 func (p *CommandPlugin) GetObjectMeta() corev2.ObjectMeta {
@@ -79,7 +93,7 @@ func (p *CommandPlugin) SetObjectMeta(meta corev2.ObjectMeta) {
 
 func getEntity() (*corev2.Entity, error) {
 	// create an entity for using with command asset filtering
-	systemInfo, err := system.Info()
+	systemInfo, err := system.Info(true)
 	if err != nil {
 		return nil, err
 	}
@@ -170,7 +184,7 @@ func (m *CommandManager) InstallCommandFromBonsai(alias, bonsaiAssetName string)
 
 	asset, ok := wrapper.Value.(*corev2.Asset)
 	if !ok {
-		return fmt.Errorf("bonsai returned %s.%s, want core/v2.Asset!", wrapper.APIVersion, wrapper.Type)
+		return fmt.Errorf("bonsai returned %s.%s, want core/v2.Asset", wrapper.APIVersion, wrapper.Type)
 	}
 
 	asset.Namespace = sensuctlAssetNamespace

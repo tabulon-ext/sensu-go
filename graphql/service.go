@@ -116,8 +116,9 @@ func (service *Service) RegisterUnion(t UnionDesc, impl UnionTypeResolver) {
 	cfg := t.Config()
 	registrar := func(m graphql.TypeMap) graphql.Type {
 		cfg = t.Config()
-		newTypes := make([]*graphql.Object, len(cfg.Types))
-		for i, t := range cfg.Types {
+		cfgTypes := cfg.Types.([]*graphql.Object)
+		newTypes := make([]*graphql.Object, len(cfgTypes))
+		for i, t := range cfgTypes {
 			objType := m[t.PrivateName].(*graphql.Object)
 			newTypes[i] = objType
 		}
@@ -158,6 +159,7 @@ func (service *Service) Middleware() []Middleware {
 
 // QueryParams describe parameters of a GraphQL query.
 type QueryParams struct {
+	IsAuthed       bool
 	OperationName  string
 	Query          string
 	RootObject     map[string]interface{}
@@ -192,7 +194,14 @@ func (service *Service) Do(ctx context.Context, p QueryParams) *Result {
 		return &graphql.Result{Errors: gqlerrors.FormatErrors(err)}
 	}
 
-	// validate document
+	// run mandatory (un-skippable) validators
+	rules := MandatoryValidators()
+	validationResult := graphql.ValidateDocument(&schema, AST, rules)
+	if !validationResult.IsValid {
+		return &graphql.Result{Errors: validationResult.Errors}
+	}
+
+	// run built-in validators e.g. schema type validation
 	if !p.SkipValidation {
 		validationFinishFn := MiddlewareHandleValidationDidStart(service, &params)
 		validationResult := graphql.ValidateDocument(&schema, AST, nil)
@@ -207,7 +216,7 @@ func (service *Service) Do(ctx context.Context, p QueryParams) *Result {
 		Schema:  schema,
 		AST:     AST,
 		Args:    p.Variables,
-		Context: ctx,
+		Context: params.Context,
 	})
 }
 
@@ -343,9 +352,24 @@ func mergeObjectConfig(a, b *graphql.ObjectConfig) {
 	af := a.Fields.(graphql.Fields)
 	bf := b.Fields.(graphql.Fields)
 	for n, f := range bf {
-		af[n] = f
+		copy := *f
+		af[n] = &copy
 	}
-	ai := a.Interfaces.([]*graphql.Interface)
-	bi := b.Interfaces.([]*graphql.Interface)
-	a.Interfaces = append(ai, bi...)
+	// merge any missing interfaces
+	ias := a.Interfaces.([]*graphql.Interface)
+	ibs := b.Interfaces.([]*graphql.Interface)
+	for _, ib := range ibs {
+		var ok bool
+		for _, ia := range ias {
+			if ia.PrivateName != ib.PrivateName {
+				continue
+			}
+			ok = true
+			break
+		}
+		if !ok {
+			ias = append(ias, Interface(ib.PrivateName))
+		}
+	}
+	a.Interfaces = ias
 }

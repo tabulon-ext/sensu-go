@@ -6,17 +6,16 @@ import (
 
 	time "github.com/echlebek/timeproxy"
 	cron "github.com/robfig/cron/v3"
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
-	corev3 "github.com/sensu/sensu-go/api/core/v3"
-	cachev2 "github.com/sensu/sensu-go/backend/store/cache/v2"
+	corev2 "github.com/sensu/core/v2"
+	corev3 "github.com/sensu/core/v3"
 	"github.com/sensu/sensu-go/js"
 	"github.com/sensu/sensu-go/token"
-	"github.com/sensu/sensu-go/types/dynamic"
+	"github.com/sensu/sensu-go/dynamic"
 )
 
 // matchEntities matches the provided list of entities to the entity attributes
 // configured in the proxy request
-func matchEntities(entities []cachev2.Value, proxyRequest *corev2.ProxyRequests) []*corev3.EntityConfig {
+func matchEntities(entities []EntityCacheValue, proxyRequest *corev2.ProxyRequests) []*corev3.EntityConfig {
 	matched := make([]*corev3.EntityConfig, 0, len(entities))
 	synthesizedEntities := make([]interface{}, 0, len(entities))
 	for _, entity := range entities {
@@ -36,7 +35,7 @@ func matchEntities(entities []cachev2.Value, proxyRequest *corev2.ProxyRequests)
 
 	for i, result := range results {
 		if result {
-			matched = append(matched, entities[i].Resource.(*corev3.EntityConfig))
+			matched = append(matched, entities[i].Resource)
 		}
 	}
 

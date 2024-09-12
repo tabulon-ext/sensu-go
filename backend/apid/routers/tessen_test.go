@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/gorilla/mux"
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	corev2 "github.com/sensu/core/v2"
 	"github.com/stretchr/testify/mock"
 )
 
@@ -42,8 +42,8 @@ func TestPutTessen(t *testing.T) {
 
 	client := new(http.Client)
 
-	controller.On("CreateOrUpdate", mock.Anything, mock.Anything).Return(nil)
-	b, _ := json.Marshal(corev2.DefaultTessenConfig())
+	controller.On("CreateOrUpdate", mock.Anything, mock.Anything, mock.Anything).Return(nil)
+	b := marshalWrapped(corev2.DefaultTessenConfig())
 	body := bytes.NewReader(b)
 	endpoint := "/" + corev2.TessenResource
 	req := newRequest(t, http.MethodPut, server.URL+endpoint, body)
@@ -58,7 +58,7 @@ func TestPutTessen(t *testing.T) {
 		t.Fatalf("bad status: %d (%q)", resp.StatusCode, string(body))
 	}
 
-	controller.AssertCalled(t, "CreateOrUpdate", mock.Anything, mock.Anything)
+	controller.AssertCalled(t, "CreateOrUpdate", mock.Anything, mock.Anything, mock.Anything)
 }
 
 func TestGetTessen(t *testing.T) {
@@ -110,7 +110,7 @@ func TestPostTessenMetrics(t *testing.T) {
 
 	controller.On("Publish", mock.Anything, mock.Anything).Return(nil)
 	b, _ := json.Marshal([]corev2.MetricPoint{
-		corev2.MetricPoint{
+		{
 			Name:  "metric",
 			Value: 1,
 		},

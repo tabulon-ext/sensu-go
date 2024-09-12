@@ -1,31 +1,84 @@
 version: 2.1
 
 orbs:
-  go: circleci/go@1.1.2
+  go: circleci/go@1.7.1
+  docker: circleci/docker@1.4.0
+  windows: circleci/windows@2.4.0
 
-sensu_go_build_env: &sensu_go_build_env
-  docker:
-    - image: cimg/go:1.17.1
-      auth:
-        username: $DOCKER_USERNAME
-        password: $DOCKER_PASSWORD
+parameters:
+  go_version:
+    type: string
+    default: "1.18.3"
+
+executors:
+  go:
+    docker:
+      - image: cimg/go:<< pipeline.parameters.go_version >>
+        auth:
+          username: $DOCKER_USERNAME
+          password: $DOCKER_PASSWORD
+  go-with-postgres:
+    resource_class: xlarge
+    docker:
+      - image: cimg/go:<< pipeline.parameters.go_version >>
+        auth:
+          username: $DOCKER_USERNAME
+          password: $DOCKER_PASSWORD
+      - image: cimg/postgres:10.17
+        auth:
+          username: $DOCKER_USERNAME
+          password: $DOCKER_PASSWORD
+        environment:
+          POSTGRES_USER: circleci
+          POSTGRES_DB: circleci
+    environment:
+      PG_HOST: localhost
+      PG_USER: circleci
+      PG_URL: "host=localhost port=5432 user=circleci sslmode=disable"
+      GO111MODULE: "on"
+      GOPROXY: "https://proxy.golang.org"
 
 jobs:
   test:
-    <<: *sensu_go_build_env
-    environment:
-      GO111MODULE: 'on'
-      GOPROXY: 'https://proxy.golang.org'
-    resource_class: large
+    executor: go-with-postgres
     steps:
       - checkout
       - go/mod-download-cached
 
       # Run tests
       - run: ./build.sh unit
-      - run: ./build.sh integration
+
+  test-windows:
+    executor:
+      name: windows/default
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - go-installer-<< pipeline.parameters.go_version >>
+      - run:
+          name: Download & Install Go
+          command: .\ci\install-go.ps1 << pipeline.parameters.go_version >>
+      - save_cache:
+          key: go-installer-<< pipeline.parameters.go_version >>
+          paths:
+            - C:\go-installers
+      - run: go version
+      - run: go env
+      - restore_cache:
+          keys:
+            - go-mod-and-build-cache-<< pipeline.parameters.go_version >>
+      - run: go mod download
+      - save_cache:
+          key: go-mod-and-build-cache-<< pipeline.parameters.go_version >>
+          paths:
+            - C:\Users\circleci\go
+            - C:\Users\circleci\AppData\Local\go-build
+            - C:\Users\circleci\AppData\Roaming\go
+      - run: .\build.ps1 unit
+
   build:
-    <<: *sensu_go_build_env
+    executor: go
     parameters:
       os:
         type: string
@@ -56,6 +109,10 @@ workflows:
   run_the_tests:
     jobs:
       - test:
+          filters:
+            tags:
+              ignore: /.*/
+      - test-windows:
           filters:
             tags:
               ignore: /.*/

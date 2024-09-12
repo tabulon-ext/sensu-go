@@ -204,7 +204,6 @@ type NamespaceSilencesFieldResolverParams struct {
 	Args NamespaceSilencesFieldResolverArgs
 }
 
-//
 // NamespaceFieldResolvers represents a collection of methods whose products represent the
 // response values of the 'Namespace' type.
 type NamespaceFieldResolvers interface {
@@ -500,7 +499,7 @@ func _ObjectTypeNamespaceConfigFn() graphql1.ObjectConfig {
 						Type:         graphql1.Int,
 					},
 					"orderBy": &graphql1.ArgumentConfig{
-						DefaultValue: "ID_DESC",
+						DefaultValue: "ID",
 						Description:  "OrderBy adds optional order to the records retrieved.",
 						Type:         graphql.InputType("EntityListOrder"),
 					},

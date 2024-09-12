@@ -6,13 +6,16 @@ import (
 	"fmt"
 	"sync"
 
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	"github.com/sirupsen/logrus"
+
+	corev2 "github.com/sensu/core/v2"
+	corev3 "github.com/sensu/core/v3"
 )
 
 // Authenticator contains the list of authentication providers
 type Authenticator struct {
 	mu        sync.RWMutex
-	providers map[string]corev2.AuthProvider
+	providers map[string]corev3.AuthProvider
 }
 
 // Authenticate with the configured authentication providers
@@ -33,11 +36,20 @@ func (a *Authenticator) Authenticate(ctx context.Context, username, password str
 			continue
 		}
 
+		logger.WithFields(logrus.Fields{
+			"subject":         claims.Subject,
+			"groups":          claims.Groups,
+			"provider_id":     claims.Provider.ProviderID,
+			"provider_type":   claims.Provider.ProviderType,
+			"provider_userid": claims.Provider.UserID,
+		}).Info("login successful")
 		return claims, nil
 	}
 
 	// TODO(palourde): We might want to return a more meaningful and actionnable
 	// error message, but we don't want to leak sensitive information.
+
+	logger.WithField("username", username).Error("authentication failed")
 	return nil, errors.New("authentication failed")
 }
 
@@ -66,26 +78,26 @@ func (a *Authenticator) Refresh(ctx context.Context, claims *corev2.Claims) (*co
 }
 
 // AddProvider adds a provided provider to the list of configured providers
-func (a *Authenticator) AddProvider(provider corev2.AuthProvider) {
+func (a *Authenticator) AddProvider(provider corev3.AuthProvider) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	// Make sure the providers map is not nil
 	if a.providers == nil {
-		a.providers = map[string]corev2.AuthProvider{}
+		a.providers = map[string]corev3.AuthProvider{}
 	}
 
 	a.providers[provider.Name()] = provider
 }
 
 // Providers returns the configured providers
-func (a *Authenticator) Providers() map[string]corev2.AuthProvider {
+func (a *Authenticator) Providers() map[string]corev3.AuthProvider {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 
 	// Create a new map and copy the authenticator providers into it in order to
 	// prevent race conditions
-	providers := make(map[string]corev2.AuthProvider, len(a.providers))
+	providers := make(map[string]corev3.AuthProvider, len(a.providers))
 	for k, v := range a.providers {
 		providers[k] = v
 	}

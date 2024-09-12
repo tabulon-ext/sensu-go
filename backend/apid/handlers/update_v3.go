@@ -1,13 +1,12 @@
 package handlers
 
 import (
-	"encoding/json"
+	"errors"
 	"net/http"
-	"reflect"
 
 	"github.com/gorilla/mux"
-	corev3 "github.com/sensu/sensu-go/api/core/v3"
 	"github.com/sensu/sensu-go/backend/apid/actions"
+	"github.com/sensu/sensu-go/backend/apid/request"
 	"github.com/sensu/sensu-go/backend/authentication/jwt"
 	"github.com/sensu/sensu-go/backend/store"
 	storev2 "github.com/sensu/sensu-go/backend/store/v2"
@@ -15,41 +14,44 @@ import (
 
 // CreateOrUpdateResource creates or updates the resource given in the request
 // body, regardless of whether it already exists or not
-func (h Handlers) CreateOrUpdateV3Resource(r *http.Request) (interface{}, error) {
-	payload := reflect.New(reflect.TypeOf(h.V3Resource).Elem())
-	if err := json.NewDecoder(r.Body).Decode(payload.Interface()); err != nil {
-		return nil, actions.NewError(actions.InvalidArgument, err)
+func (h Handlers[R, T]) CreateOrUpdateResource(r *http.Request) (HandlerResponse, error) {
+	var response HandlerResponse
+	payload, err := request.Resource[R](r)
+	if err != nil {
+		return response, actions.NewError(actions.InvalidArgument, err)
+	}
+	meta := payload.GetMetadata()
+
+	if meta == nil {
+		return response, actions.NewError(actions.InvalidArgument, errors.New("nil metadata"))
 	}
 
-	if err := CheckV3Meta(payload.Interface(), mux.Vars(r), "id"); err != nil {
-		return nil, actions.NewError(actions.InvalidArgument, err)
+	if err := checkMeta(*meta, mux.Vars(r), "id"); err != nil {
+		return response, actions.NewError(actions.InvalidArgument, err)
 	}
 
-	resource, ok := payload.Interface().(corev3.Resource)
-	if !ok {
-		return nil, actions.NewErrorf(actions.InvalidArgument)
+	ctx, err := matchHeaderContext(r)
+	if err != nil {
+		return response, actions.NewErrorf(actions.InvalidArgument, err)
 	}
+	ctx = storev2.ContextWithTxInfo(ctx, &response.TxInfo)
 
-	req := storev2.NewResourceRequestFromResource(r.Context(), resource)
-	meta := resource.GetMetadata()
-
-	if claims := jwt.GetClaimsFromContext(r.Context()); claims != nil {
+	if claims := jwt.GetClaimsFromContext(ctx); claims != nil {
 		meta.CreatedBy = claims.StandardClaims.Subject
 	}
 
-	wrapper, err := storev2.WrapResource(resource)
-	if err != nil {
-		return nil, actions.NewError(actions.InvalidArgument, err)
-	}
+	gstore := storev2.Of[R](h.Store)
 
-	if err := h.StoreV2.CreateOrUpdate(req, wrapper); err != nil {
+	if err := gstore.CreateOrUpdate(ctx, payload); err != nil {
 		switch err := err.(type) {
+		case *store.ErrPreconditionFailed:
+			return response, actions.NewError(actions.PreconditionFailed, err)
 		case *store.ErrNotValid:
-			return nil, actions.NewError(actions.InvalidArgument, err)
+			return response, actions.NewError(actions.InvalidArgument, err)
 		default:
-			return nil, actions.NewError(actions.InternalErr, err)
+			return response, actions.NewError(actions.InternalErr, err)
 		}
 	}
 
-	return nil, nil
+	return response, nil
 }

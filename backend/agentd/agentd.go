@@ -2,8 +2,6 @@ package agentd
 
 import (
 	"context"
-	"crypto/tls"
-	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -17,9 +15,9 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
 	"github.com/prometheus/client_golang/prometheus"
+	corev2 "github.com/sensu/core/v2"
+	corev3 "github.com/sensu/core/v3"
 	"github.com/sensu/sensu-go/agent"
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
-	"github.com/sensu/sensu-go/backend/apid/actions"
 	"github.com/sensu/sensu-go/backend/apid/middlewares"
 	"github.com/sensu/sensu-go/backend/apid/routers"
 	"github.com/sensu/sensu-go/backend/authentication/jwt"
@@ -29,12 +27,10 @@ import (
 	"github.com/sensu/sensu-go/backend/metrics"
 	"github.com/sensu/sensu-go/backend/ringv2"
 	"github.com/sensu/sensu-go/backend/store"
-	"github.com/sensu/sensu-go/backend/store/cache"
+	cachev2 "github.com/sensu/sensu-go/backend/store/cache/v2"
 	storev2 "github.com/sensu/sensu-go/backend/store/v2"
-	"github.com/sensu/sensu-go/backend/store/v2/etcdstore"
 	"github.com/sensu/sensu-go/transport"
 	"github.com/sirupsen/logrus"
-	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 var (
@@ -76,6 +72,8 @@ func init() {
 	}
 }
 
+type NamespaceCache = *cachev2.Resource[*corev3.Namespace, corev3.Namespace]
+
 // Agentd is the backend HTTP API.
 type Agentd struct {
 	// Host is the hostname Agentd is running on.
@@ -84,38 +82,36 @@ type Agentd struct {
 	// Port is the port Agentd is running on.
 	Port int
 
-	stopping            chan struct{}
-	running             *atomic.Value
-	wg                  *sync.WaitGroup
-	errChan             chan error
-	httpServer          *http.Server
-	store               store.Store
-	storev2             storev2.Interface
-	bus                 messaging.MessageBus
-	tls                 *corev2.TLSOptions
-	ringPool            *ringv2.RingPool
-	ctx                 context.Context
-	cancel              context.CancelFunc
-	writeTimeout        int
-	namespaceCache      *cache.Resource
-	watcher             <-chan store.WatchEventEntityConfig
-	client              *clientv3.Client
-	etcdClientTLSConfig *tls.Config
-	healthRouter        *routers.HealthRouter
+	stopping       chan struct{}
+	running        *atomic.Value
+	wg             *sync.WaitGroup
+	errChan        chan error
+	httpServer     *http.Server
+	store          storev2.Interface
+	bus            messaging.MessageBus
+	tls            *corev2.TLSOptions
+	ringPool       *ringv2.RingPool
+	ctx            context.Context
+	cancel         context.CancelFunc
+	writeTimeout   int
+	namespaceCache NamespaceCache
+	watcher        <-chan []storev2.WatchEvent
+	healthRouter   routers.Router
+	authenticator  Authenticator
 }
 
 // Config configures an Agentd.
 type Config struct {
-	Host                string
-	Port                int
-	Bus                 messaging.MessageBus
-	Store               store.Store
-	TLS                 *corev2.TLSOptions
-	RingPool            *ringv2.RingPool
-	WriteTimeout        int
-	Client              *clientv3.Client
-	EtcdClientTLSConfig *tls.Config
-	Watcher             <-chan store.WatchEventEntityConfig
+	Host          string
+	Port          int
+	Bus           messaging.MessageBus
+	Store         storev2.Interface
+	TLS           *corev2.TLSOptions
+	RingPool      *ringv2.RingPool
+	WriteTimeout  int
+	Watcher       <-chan []storev2.WatchEvent
+	HealthRouter  routers.Router
+	Authenticator Authenticator
 }
 
 // Option is a functional option.
@@ -125,23 +121,21 @@ type Option func(*Agentd) error
 func New(c Config, opts ...Option) (*Agentd, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	a := &Agentd{
-		Host:                c.Host,
-		Port:                c.Port,
-		bus:                 c.Bus,
-		store:               c.Store,
-		tls:                 c.TLS,
-		stopping:            make(chan struct{}, 1),
-		running:             &atomic.Value{},
-		wg:                  &sync.WaitGroup{},
-		errChan:             make(chan error, 1),
-		ringPool:            c.RingPool,
-		ctx:                 ctx,
-		cancel:              cancel,
-		writeTimeout:        c.WriteTimeout,
-		storev2:             etcdstore.NewStore(c.Client),
-		watcher:             c.Watcher,
-		client:              c.Client,
-		etcdClientTLSConfig: c.EtcdClientTLSConfig,
+		Host:          c.Host,
+		Port:          c.Port,
+		bus:           c.Bus,
+		tls:           c.TLS,
+		stopping:      make(chan struct{}, 1),
+		running:       &atomic.Value{},
+		wg:            &sync.WaitGroup{},
+		errChan:       make(chan error, 1),
+		ringPool:      c.RingPool,
+		ctx:           ctx,
+		cancel:        cancel,
+		writeTimeout:  c.WriteTimeout,
+		store:         c.Store,
+		watcher:       c.Watcher,
+		authenticator: c.Authenticator,
 	}
 
 	// prepare server TLS config
@@ -163,9 +157,7 @@ func New(c Config, opts ...Option) (*Agentd, error) {
 	// runtime, so we need this workaround
 	router := mux.NewRouter()
 
-	a.healthRouter = routers.NewHealthRouter(
-		actions.NewHealthController(a.store, a.client.Cluster, a.etcdClientTLSConfig),
-	)
+	a.healthRouter = c.HealthRouter
 	a.healthRouter.Mount(router)
 
 	route := router.NewRoute().Subrouter()
@@ -184,7 +176,7 @@ func New(c Config, opts ...Option) (*Agentd, error) {
 			if cs != http.StateClosed {
 				var msg []byte
 				if _, err := c.Read(msg); err != nil {
-					logger.WithError(err).Error("websocket connection error")
+					logger.WithField("source", c.RemoteAddr().String()).WithError(err).Error("websocket connection error")
 				}
 			}
 		},
@@ -195,7 +187,7 @@ func New(c Config, opts ...Option) (*Agentd, error) {
 		}
 	}
 
-	a.namespaceCache, err = cache.New(ctx, c.Client, &corev2.Namespace{}, false)
+	a.namespaceCache, err = cachev2.New[*corev3.Namespace](ctx, c.Store, false)
 	if err != nil {
 		return nil, err
 	}
@@ -247,23 +239,21 @@ func (a *Agentd) runWatcher() {
 		select {
 		case <-a.ctx.Done():
 			return
-		case event, ok := <-a.watcher:
+		case events, ok := <-a.watcher:
 			if !ok {
 				return
 			}
-			if err := a.handleEvent(event); err != nil {
-				logger.WithError(err).Error("error handling entity config watch event")
+			for _, event := range events {
+				if err := a.handleEvent(event); err != nil {
+					logger.WithError(err).Error("error handling entity config watch event")
+				}
 			}
 		}
 	}
 }
 
-func (a *Agentd) handleEvent(event store.WatchEventEntityConfig) error {
-	if event.Entity == nil {
-		return errors.New("nil entity received from entity config watcher")
-	}
-
-	topic := messaging.EntityConfigTopic(event.Entity.Metadata.Namespace, event.Entity.Metadata.Name)
+func (a *Agentd) handleEvent(event storev2.WatchEvent) error {
+	topic := messaging.EntityConfigTopic(event.Key.Namespace, event.Key.Name)
 	if err := a.bus.Publish(topic, &event); err != nil {
 		logger.WithField("topic", topic).WithError(err).
 			Error("unable to publish an entity config update to the bus")
@@ -343,7 +333,8 @@ func (a *Agentd) webSocketHandler(w http.ResponseWriter, r *http.Request) {
 	var found bool
 	values := a.namespaceCache.Get("")
 	for _, value := range values {
-		if namespace == value.Resource.GetObjectMeta().Name {
+		objectMeta := value.Resource.GetMetadata()
+		if objectMeta != nil && objectMeta.Name == namespace {
 			found = true
 			break
 		}
@@ -372,8 +363,7 @@ func (a *Agentd) webSocketHandler(w http.ResponseWriter, r *http.Request) {
 		WriteTimeout:  a.writeTimeout,
 		Bus:           a.bus,
 		Conn:          transport.NewTransport(conn),
-		Store:         a.store,
-		Storev2:       a.storev2,
+		Storev2:       a.store,
 		Marshal:       marshal,
 		Unmarshal:     unmarshal,
 	}
@@ -419,7 +409,7 @@ func (a *Agentd) AuthenticationMiddleware(next http.Handler) http.Handler {
 		}
 
 		// Authenticate against the provider
-		user, err := a.store.AuthenticateUser(r.Context(), username, password)
+		claims, err := a.authenticator.Authenticate(r.Context(), username, password)
 		if err != nil {
 			if r.Context().Err() != nil {
 				http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
@@ -447,11 +437,10 @@ func (a *Agentd) AuthenticationMiddleware(next http.Handler) http.Handler {
 
 		// The user was authenticated against the local store, therefore add the
 		// system:user group so it can view itself and change its password
-		user.Groups = append(user.Groups, "system:user")
+		claims.Groups = append(claims.Groups, "system:user")
 
 		// TODO: eventually break out authorization details in context from jwt
 		// claims; in this method they are too tightly bound
-		claims, _ := jwt.NewClaims(user)
 		ctx := jwt.SetClaimsIntoContext(r, claims)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
@@ -523,8 +512,6 @@ func (a *Agentd) EntityLimiterMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// ReplaceHealthController replaces the default health controller. It
-// can be replaced by an enterprise controller to include more information.
-func (a *Agentd) ReplaceHealthController(controller routers.HealthController) {
-	a.healthRouter.Swap(controller)
+type Authenticator interface {
+	Authenticate(ctx context.Context, username, password string) (*corev2.Claims, error)
 }

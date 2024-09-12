@@ -1,20 +1,22 @@
 package actions
 
 import (
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	"context"
+
+	corev2 "github.com/sensu/core/v2"
 	"github.com/sensu/sensu-go/backend/messaging"
 	"github.com/sensu/sensu-go/backend/store"
-	"golang.org/x/net/context"
+	storev2 "github.com/sensu/sensu-go/backend/store/v2"
 )
 
 // TessenController exposes actions which a viewer can perform
 type TessenController struct {
-	store store.TessenConfigStore
+	store storev2.Interface
 	bus   messaging.MessageBus
 }
 
 // NewTessenController returns a new TessenController
-func NewTessenController(store store.TessenConfigStore, bus messaging.MessageBus) TessenController {
+func NewTessenController(store storev2.Interface, bus messaging.MessageBus) TessenController {
 	return TessenController{
 		store: store,
 		bus:   bus,
@@ -23,7 +25,8 @@ func NewTessenController(store store.TessenConfigStore, bus messaging.MessageBus
 
 // CreateOrUpdate creates or updates the tessen configuration
 func (c TessenController) CreateOrUpdate(ctx context.Context, config *corev2.TessenConfig) error {
-	if err := c.store.CreateOrUpdateTessenConfig(ctx, config); err != nil {
+	tstore := storev2.Of[*corev2.TessenConfig](c.store)
+	if err := tstore.CreateOrUpdate(ctx, config); err != nil {
 		switch err := err.(type) {
 		case *store.ErrNotValid:
 			return NewErrorf(InvalidArgument)
@@ -42,7 +45,9 @@ func (c TessenController) CreateOrUpdate(ctx context.Context, config *corev2.Tes
 
 // Get gets the tessen configuration
 func (c TessenController) Get(ctx context.Context) (*corev2.TessenConfig, error) {
-	config, err := c.store.GetTessenConfig(ctx)
+	tstore := storev2.Of[*corev2.TessenConfig](c.store)
+	// tessen resource does not have a name or namespace
+	config, err := tstore.Get(ctx, storev2.ID{})
 	if err != nil {
 		switch err := err.(type) {
 		case *store.ErrNotFound:

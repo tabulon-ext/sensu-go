@@ -24,6 +24,7 @@ coverage.out
 ca-config.json
 *.log
 .envrc
+.direnv/
 
 # editors
 .idea
@@ -34,3 +35,7 @@ sensu-backend
 sensuctl
 loadit
 *.exe
+
+# multi-module workspaces
+go.work
+go.work.sum

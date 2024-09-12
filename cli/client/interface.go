@@ -4,24 +4,24 @@ import (
 	"net/http"
 
 	"github.com/go-resty/resty/v2"
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
-	"github.com/sensu/sensu-go/types"
-	clientv3 "go.etcd.io/etcd/client/v3"
+	corev2 "github.com/sensu/core/v2"
+	corev3 "github.com/sensu/core/v3"
+	"github.com/sensu/core/v3/types"
 )
 
 // ListOptions represents the various options that can be used when listing
 // resources.
 type ListOptions struct {
-	FieldSelector string
-	LabelSelector string
+	FieldSelector	string
+	LabelSelector	string
 
 	// ContinueToken is the current pagination token.
-	ContinueToken string
+	ContinueToken	string
 
 	// ChunkSize is the number of objects to fetch per page when taking
 	// advantage of the API's pagination capabilities. ChunkSize <= 0 means
 	// fetch everything all at once; do not use pagination.
-	ChunkSize int
+	ChunkSize	int
 }
 
 // APIClient client methods across the Sensu API
@@ -46,14 +46,13 @@ type APIClient interface {
 	UserAPIClient
 	SilencedAPIClient
 	GenericClient
-	ClusterMemberClient
 	LicenseClient
 }
 
 // APIKeyClient exposes client methods for api keys.
 type APIKeyClient interface {
 	// PostAPIKey creates an api key and returns the location header.
-	PostAPIKey(path string, obj interface{}) (string, error)
+	PostAPIKey(path string, obj interface{}) (corev2.APIKeyResponse, error)
 }
 
 // GenericClient exposes generic resource methods.
@@ -65,7 +64,7 @@ type GenericClient interface {
 	// List retrieves all keys with the given path prefix and stores them into objs
 	List(path string, objs interface{}, options *ListOptions, header *http.Header) error
 	// Post creates the given obj at the specified path
-	Post(path string, obj interface{}) error
+	Post(path string, obj corev3.Resource) error
 	// Put creates the given obj at the specified path
 	Put(path string, obj interface{}) error
 	// PostWithResponse creates the given obj at the specified path, returning the response
@@ -173,10 +172,10 @@ type MutatorAPIClient interface {
 
 // NamespaceAPIClient client methods for namespaces
 type NamespaceAPIClient interface {
-	CreateNamespace(*corev2.Namespace) error
-	UpdateNamespace(*corev2.Namespace) error
+	CreateNamespace(*corev3.Namespace) error
+	UpdateNamespace(*corev3.Namespace) error
 	DeleteNamespace(string) error
-	FetchNamespace(string) (*corev2.Namespace, error)
+	FetchNamespace(string) (*corev3.Namespace, error)
 }
 
 // PipelineAPIClient client methods for pipelines
@@ -223,31 +222,13 @@ type SilencedAPIClient interface {
 
 	// ListSilenceds lists all silenced entries, optionally constraining by
 	// subscription or check.
-	ListSilenceds(namespace, subscription, check string, options *ListOptions, header *http.Header) ([]types.Silenced, error)
+	ListSilenceds(namespace, subscription, check string, options *ListOptions, header *http.Header) ([]corev2.Silenced, error)
 
 	// FetchSilenced fetches the silenced entry by ID.
 	FetchSilenced(id string) (*corev2.Silenced, error)
 
 	// UpdateSilenced updates an existing silenced entry.
 	UpdateSilenced(*corev2.Silenced) error
-}
-
-// ClusterMemberClient specifies client methods for cluster membership management.
-type ClusterMemberClient interface {
-	// MemberList lists cluster members.
-	MemberList() (*clientv3.MemberListResponse, error)
-
-	// MemberAdd adds a cluster member.
-	MemberAdd(peerAddrs []string) (*clientv3.MemberAddResponse, error)
-
-	// MemberUpdate updates a cluster member.
-	MemberUpdate(id uint64, peerAddrs []string) (*clientv3.MemberUpdateResponse, error)
-
-	// MemberRemove removes a cluster member.
-	MemberRemove(id uint64) (*clientv3.MemberRemoveResponse, error)
-
-	// FetchClusterID gets the sensu cluster id.
-	FetchClusterID() (string, error)
 }
 
 // LicenseClient specifies the enteprise client methods for license management.

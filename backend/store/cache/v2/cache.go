@@ -2,24 +2,20 @@ package v2
 
 import (
 	"context"
-	"fmt"
-	"reflect"
 	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	corev3 "github.com/sensu/sensu-go/api/core/v3"
+	corev3 "github.com/sensu/core/v3"
 	"github.com/sensu/sensu-go/backend/store"
 	storev2 "github.com/sensu/sensu-go/backend/store/v2"
-	"github.com/sensu/sensu-go/backend/store/v2/etcdstore"
-	"github.com/sensu/sensu-go/types/dynamic"
-	"go.etcd.io/etcd/client/v3"
+	"github.com/sensu/sensu-go/dynamic"
 )
 
 // Value contains a cached value, and its synthesized companion.
-type Value struct {
-	Resource corev3.Resource
+type Value[R storev2.Resource[T], T any] struct {
+	Resource R
 	Synth    interface{}
 }
 
@@ -27,51 +23,72 @@ func getCacheKey(resource corev3.Resource) string {
 	return resource.GetMetadata().Namespace
 }
 
-func getCacheValue(resource corev3.Resource, synthesize bool) Value {
-	v := Value{Resource: resource}
+func getCacheValue[R storev2.Resource[T], T any](resource R, synthesize bool) Value[R, T] {
+	v := Value[R, T]{Resource: resource}
 	if synthesize {
 		v.Synth = dynamic.Synthesize(resource)
 	}
 	return v
 }
 
-type cache map[string][]Value
+type cache[R storev2.Resource[T], T any] map[string][]Value[R, T]
 
-// buildCache ...
-func buildCache(resources []corev3.Resource, synthesize bool) cache {
-	cache := make(map[string][]Value)
+func buildCache[R storev2.Resource[T], T any](resources []R, synthesize bool) (cache[R, T], string) {
+	cache := make(map[string][]Value[R, T])
+	var newestUpdate time.Time
 	for i, resource := range resources {
+		meta := resource.GetMetadata()
+		var updatedSince time.Time
+		if err := updatedSince.UnmarshalText([]byte(meta.Labels[store.SensuUpdatedAtKey])); err == nil {
+			if updatedSince.After(newestUpdate) {
+				newestUpdate = updatedSince
+			}
+		}
 		key := getCacheKey(resource)
-		cache[key] = append(cache[key], getCacheValue(resources[i], synthesize))
+		cache[key] = append(cache[key], getCacheValue[R, T](resources[i], synthesize))
 	}
-	return cache
+	for _, slice := range cache {
+		sort.Sort(resourceSlice[R, T](slice))
+	}
+	b, _ := newestUpdate.MarshalText()
+	return cache, string(b)
 }
 
-type resourceSlice []Value
+type resourceSlice[R storev2.Resource[T], T any] []Value[R, T]
 
-func (s resourceSlice) Find(value Value) Value {
+func (s resourceSlice[R, T]) Find(value Value[R, T]) Value[R, T] {
 	idx := sort.Search(len(s), func(i int) bool {
 		return !resourceLT(s[i], value)
 	})
 	if idx < len(s) && s[idx].Resource.GetMetadata().Name == value.Resource.GetMetadata().Name {
 		return s[idx]
 	}
-	return Value{}
+	return Value[R, T]{}
 }
 
-func (s resourceSlice) Len() int {
+func (s resourceSlice[R, T]) FindIndex(name string) (int, bool) {
+	idx := sort.Search(len(s), func(i int) bool {
+		return s[i].Resource.GetMetadata().Name >= name
+	})
+	if idx < len(s) && s[idx].Resource.GetMetadata().Name == name {
+		return idx, true
+	}
+	return idx, false
+}
+
+func (s resourceSlice[R, T]) Len() int {
 	return len(s)
 }
 
-func (s resourceSlice) Swap(i, j int) {
+func (s resourceSlice[R, T]) Swap(i, j int) {
 	s[i], s[j] = s[j], s[i]
 }
 
-func (s resourceSlice) Less(i, j int) bool {
+func (s resourceSlice[R, T]) Less(i, j int) bool {
 	return resourceLT(s[i], s[j])
 }
 
-func resourceLT(x, y Value) bool {
+func resourceLT[R storev2.Resource[T], T any](x, y Value[R, T]) bool {
 	if x.Resource == nil {
 		return true
 	}
@@ -91,43 +108,33 @@ type cacheWatcher struct {
 // efficiently retrieved from the cache by namespace.
 // `sync/atomic` expects the first word in an allocated struct to be 64-bit
 // aligned on both ARM and x86-32. See https://goo.gl/zW7dgq for more details.
-type Resource struct {
-	count      int64
-	cache      cache
-	cacheMu    sync.RWMutex
-	watchers   []cacheWatcher
-	watchersMu sync.Mutex
-	synthesize bool
-	resourceT  corev3.Resource
-	client     *clientv3.Client
-}
-
-// getResources retrieves the resources from the store
-func getResources(ctx context.Context, client *clientv3.Client, resource corev3.Resource) ([]corev3.Resource, error) {
-	req := storev2.NewResourceRequestFromResource(ctx, resource)
-	stor := etcdstore.NewStore(client)
-	results, err := stor.List(req, &store.SelectionPredicate{})
-	if err != nil {
-		return nil, fmt.Errorf("error creating ResourceCacher: %s", err)
-	}
-	return results.Unwrap()
+type Resource[R storev2.Resource[T], T any] struct {
+	count        int64
+	cache        cache[R, T]
+	cacheMu      sync.RWMutex
+	watchers     []cacheWatcher
+	watchersMu   sync.Mutex
+	synthesize   bool
+	store        storev2.Interface
+	updatedSince string
 }
 
 // New creates a new resource cache. It retrieves all resources from the
 // store on creation.
-func New(ctx context.Context, client *clientv3.Client, resource corev3.Resource, synthesize bool) (*Resource, error) {
-	resources, err := getResources(ctx, client, resource)
+func New[R storev2.Resource[T], T any](ctx context.Context, store storev2.Interface, synthesize bool) (*Resource[R, T], error) {
+	gstore := storev2.Of[R, T](store)
+	resources, err := gstore.List(ctx, storev2.ID{}, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	cache := buildCache(resources, synthesize)
+	cache, updatedSince := buildCache[R, T](resources, synthesize)
 
-	cacher := &Resource{
-		cache:      cache,
-		synthesize: synthesize,
-		resourceT:  resource,
-		client:     client,
+	cacher := &Resource[R, T]{
+		cache:        cache,
+		synthesize:   synthesize,
+		store:        store,
+		updatedSince: updatedSince,
 	}
 	atomic.StoreInt64(&cacher.count, int64(len(resources)))
 
@@ -139,23 +146,25 @@ func New(ctx context.Context, client *clientv3.Client, resource corev3.Resource,
 // NewFromResources creates a new resources cache using the given resources.
 // This function should only be used for testing purpose; it provides a way to
 // inject resources directly into the cache without an actual store
-func NewFromResources(resources []corev3.Resource, synthesize bool) *Resource {
-	return &Resource{
-		cacheMu: sync.RWMutex{},
-		cache:   buildCache(resources, synthesize),
+func NewFromResources[R storev2.Resource[T], T any](resources []R, synthesize bool) *Resource[R, T] {
+	cache, updatedSince := buildCache[R, T](resources, synthesize)
+	return &Resource[R, T]{
+		cacheMu:      sync.RWMutex{},
+		cache:        cache,
+		updatedSince: updatedSince,
 	}
 }
 
 // Get returns all cached resources in a namespace.
-func (r *Resource) Get(namespace string) []Value {
+func (r *Resource[R, T]) Get(namespace string) []Value[R, T] {
 	r.cacheMu.RLock()
 	defer r.cacheMu.RUnlock()
 	return r.cache[namespace]
 }
 
 // GetAll returns all cached resources across all namespaces.
-func (r *Resource) GetAll() []Value {
-	values := []Value{}
+func (r *Resource[R, T]) GetAll() []Value[R, T] {
+	values := []Value[R, T]{}
 	r.cacheMu.RLock()
 	defer r.cacheMu.RUnlock()
 	for _, n := range r.cache {
@@ -165,13 +174,13 @@ func (r *Resource) GetAll() []Value {
 }
 
 // Count returns the total count of all cached resources across all namespaces.
-func (r *Resource) Count() int64 {
+func (r *Resource[R, T]) Count() int64 {
 	return atomic.LoadInt64(&r.count)
 }
 
 // Watch allows cache users to get notified when the cache has new values.
 // When the context is canceled, the channel will be closed.
-func (r *Resource) Watch(ctx context.Context) <-chan struct{} {
+func (r *Resource[R, T]) Watch(ctx context.Context) <-chan struct{} {
 	watcher := cacheWatcher{
 		ctx: ctx,
 		ch:  make(chan struct{}, 1),
@@ -182,7 +191,7 @@ func (r *Resource) Watch(ctx context.Context) <-chan struct{} {
 	return watcher.ch
 }
 
-func (r *Resource) notifyWatchers() {
+func (r *Resource[R, T]) notifyWatchers() {
 	r.watchersMu.Lock()
 	defer r.watchersMu.Unlock()
 	deletes := map[int]struct{}{}
@@ -207,7 +216,7 @@ func (r *Resource) notifyWatchers() {
 	r.watchers = newWatchers
 }
 
-func (r *Resource) start(ctx context.Context) {
+func (r *Resource[R, T]) start(ctx context.Context) {
 	// 1s is the minimum scheduling interval, and so is the rate that
 	// the cache will update at.
 	ticker := time.NewTicker(time.Second * 5)
@@ -217,9 +226,9 @@ func (r *Resource) start(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			updates, err := r.rebuild(ctx)
+			updates, err := r.refresh(ctx)
 			if err != nil {
-				logger.WithError(err).Error("couldn't rebuild cache")
+				logger.WithError(err).Error("couldn't refresh cache")
 			}
 			if updates {
 				r.notifyWatchers()
@@ -228,45 +237,60 @@ func (r *Resource) start(ctx context.Context) {
 	}
 }
 
-// rebuild the cache using the store as the source of truth
-func (r *Resource) rebuild(ctx context.Context) (bool, error) {
-	logger.Debugf("rebuilding the cache for resource type %T", r.resourceT)
-	resources, err := getResources(ctx, r.client, r.resourceT)
+// refresh the cache using the store as the source of truth
+func (r *Resource[R, T]) refresh(ctx context.Context) (bool, error) {
+	gstore := storev2.Of[R, T](r.store)
+	pred := &store.SelectionPredicate{
+		UpdatedSince:   r.updatedSince,
+		IncludeDeletes: true,
+	}
+	resources, err := gstore.List(ctx, storev2.ID{}, pred)
 	if err != nil {
 		return false, err
 	}
-	atomic.StoreInt64(&r.count, int64(len(resources)))
-	newCache := buildCache(resources, r.synthesize)
-	var hasUpdates bool
 	r.cacheMu.Lock()
 	defer r.cacheMu.Unlock()
-	for key, values := range newCache {
-		oldValues, ok := r.cache[key]
-		if !ok {
-			// Apparently we have an entire namespace's worth of values that
-			// just appeared out of nowhere...
-			hasUpdates = true
-			continue
-		}
-		for _, value := range oldValues {
-			newValue := resourceSlice(values).Find(value)
-			if newValue.Resource == nil {
-				hasUpdates = true
-				continue
+	hasUpdates := len(resources) > 0
+	var newestUpdate time.Time
+	_ = newestUpdate.UnmarshalText([]byte(r.updatedSince))
+	for _, resource := range resources {
+		meta := resource.GetMetadata()
+		var updatedAt time.Time
+		if err := updatedAt.UnmarshalText([]byte(meta.Labels[store.SensuUpdatedAtKey])); err == nil {
+			if updatedAt.After(newestUpdate) {
+				newestUpdate = updatedAt
 			}
 		}
-		for _, value := range values {
-			oldValue := resourceSlice(oldValues).Find(value)
-			if oldValue.Resource == nil {
-				hasUpdates = true
-				continue
+		slice := resourceSlice[R, T](r.cache[meta.Namespace])
+		if _, ok := meta.Labels[store.SensuDeletedAtKey]; ok {
+			toDelete, ok := slice.FindIndex(meta.Name)
+			if ok {
+				// remove value
+				slice = append(slice[:toDelete], slice[toDelete+1:]...)
+				r.cache[meta.Namespace] = slice
 			}
-			if !reflect.DeepEqual(oldValue.Resource, value.Resource) {
-				hasUpdates = true
-				continue
+		} else {
+			value := getCacheValue(resource, r.synthesize)
+			idx, ok := slice.FindIndex(meta.Name)
+			if ok {
+				// replace value
+				slice[idx] = value
+			} else {
+				// new value, sorted insert
+				slice = append(slice, value)
+				copy(slice[idx+1:], slice[idx:])
+				slice[idx] = value
+				r.cache[meta.Namespace] = slice
 			}
 		}
 	}
-	r.cache = newCache
+	var resourceCount int64
+	for _, slice := range r.cache {
+		resourceCount += int64(len(slice))
+	}
+	atomic.StoreInt64(&r.count, resourceCount)
+	b, _ := newestUpdate.MarshalText()
+	r.updatedSince = string(b)
+
 	return hasUpdates, nil
 }
