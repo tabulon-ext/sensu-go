@@ -3,7 +3,7 @@ package mockpipeline
 import (
 	"context"
 
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	corev2 "github.com/sensu/core/v2"
 	"github.com/stretchr/testify/mock"
 )
 
@@ -18,7 +18,7 @@ func (m *FilterAdapter) Name() string {
 	return args.Get(0).(string)
 }
 
-// CanMutate ...
+// CanFilter ...
 func (m *FilterAdapter) CanFilter(ref *corev2.ResourceReference) bool {
 	args := m.Called(ref)
 	return args.Get(0).(bool)

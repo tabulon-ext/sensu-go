@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	corev2 "github.com/sensu/core/v2"
 	"github.com/sensu/sensu-go/backend/messaging"
 	"github.com/sensu/sensu-go/backend/pipeline"
 	"github.com/sensu/sensu-go/backend/store"
@@ -27,8 +27,6 @@ const (
 )
 
 var (
-	defaultStoreTimeout = time.Minute
-
 	messageHandlerDuration = prometheus.NewSummaryVec(
 		prometheus.SummaryOpts{
 			Name:       MessageHandlerDuration,
@@ -52,18 +50,14 @@ type Pipelined struct {
 	subscription messaging.Subscription
 	bus          messaging.MessageBus
 	workerCount  int
-	store        store.Store
-	storeTimeout time.Duration
 	adapters     []pipeline.Adapter
 }
 
 // Config configures a Pipelined.
 type Config struct {
-	Bus          messaging.MessageBus
-	BufferSize   int
-	Store        store.Store
-	StoreTimeout time.Duration
-	WorkerCount  int
+	Bus         messaging.MessageBus
+	BufferSize  int
+	WorkerCount int
 }
 
 // Option is a functional option used to configure Pipelined.
@@ -86,21 +80,15 @@ func New(c Config, options ...Option) (*Pipelined, error) {
 		logger.Warn("WorkerCount not configured")
 		c.WorkerCount = 1
 	}
-	if c.StoreTimeout == 0 {
-		logger.Warn("StoreTimeout not configured")
-		c.StoreTimeout = defaultStoreTimeout
-	}
 
 	p := &Pipelined{
-		bus:          c.Bus,
-		stopping:     make(chan struct{}, 1),
-		running:      &atomic.Value{},
-		wg:           &sync.WaitGroup{},
-		errChan:      make(chan error, 1),
-		eventChan:    make(chan interface{}, c.BufferSize),
-		workerCount:  c.WorkerCount,
-		store:        c.Store,
-		storeTimeout: c.StoreTimeout,
+		bus:         c.Bus,
+		stopping:    make(chan struct{}, 1),
+		running:     &atomic.Value{},
+		wg:          &sync.WaitGroup{},
+		errChan:     make(chan error, 1),
+		eventChan:   make(chan interface{}, c.BufferSize),
+		workerCount: c.WorkerCount,
 	}
 	for _, o := range options {
 		if err := o(p); err != nil {

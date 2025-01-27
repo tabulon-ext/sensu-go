@@ -5,8 +5,9 @@ import (
 
 	"github.com/sensu/sensu-go/backend/authorization"
 	"github.com/sensu/sensu-go/backend/store"
+	storev2 "github.com/sensu/sensu-go/backend/store/v2"
 
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	corev2 "github.com/sensu/core/v2"
 )
 
 // UserClient is an API client for users.
@@ -16,7 +17,7 @@ type UserClient struct {
 }
 
 // NewUserClient creates a new UserClient, given a store and an authorizer.
-func NewUserClient(store store.ResourceStore, auth authorization.Authorizer) *UserClient {
+func NewUserClient(store storev2.Interface, auth authorization.Authorizer) *UserClient {
 	return &UserClient{
 		client: GenericClient{
 			Kind:       &corev2.User{},

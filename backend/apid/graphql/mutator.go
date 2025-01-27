@@ -1,11 +1,12 @@
 package graphql
 
 import (
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	corev2 "github.com/sensu/core/v2"
+	corev3 "github.com/sensu/core/v3"
 	"github.com/sensu/sensu-go/backend/apid/graphql/globalid"
 	"github.com/sensu/sensu-go/backend/apid/graphql/schema"
 	"github.com/sensu/sensu-go/graphql"
-	"github.com/sensu/sensu-go/types"
+	"github.com/sensu/core/v3/types"
 )
 
 var _ schema.MutatorFieldResolvers = (*mutatorImpl)(nil)
@@ -40,5 +41,5 @@ func (*mutatorImpl) IsTypeOf(s interface{}, p graphql.IsTypeOfParams) bool {
 
 // ToJSON implements response to request for 'toJSON' field.
 func (*mutatorImpl) ToJSON(p graphql.ResolveParams) (interface{}, error) {
-	return types.WrapResource(p.Source.(corev2.Resource)), nil
+	return types.WrapResource(p.Source.(corev3.Resource)), nil
 }

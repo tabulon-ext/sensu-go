@@ -3,46 +3,40 @@ package mockstore
 import (
 	"context"
 
-	"github.com/sensu/sensu-go/types"
+	v2 "github.com/sensu/core/v2"
 )
 
-// DeleteSilencedEntryByName ...
-func (s *MockStore) DeleteSilencedEntryByName(ctx context.Context, silencedID ...string) error {
-	args := s.Called(ctx, silencedID)
+func (s *MockStore) DeleteSilences(ctx context.Context, namespace string, silencedID []string) error {
+	args := s.Called(ctx, namespace, silencedID)
 	return args.Error(0)
 }
 
-// GetSilencedEntries ...
-func (s *MockStore) GetSilencedEntries(ctx context.Context) ([]*types.Silenced, error) {
-	args := s.Called(ctx)
-	return args.Get(0).([]*types.Silenced), args.Error(1)
+func (s *MockStore) GetSilences(ctx context.Context, namespace string) ([]*v2.Silenced, error) {
+	args := s.Called(ctx, namespace)
+	return args.Get(0).([]*v2.Silenced), args.Error(1)
 }
 
-// GetSilencedEntryByName ...
-func (s *MockStore) GetSilencedEntryByName(ctx context.Context, silencedID string) (*types.Silenced, error) {
-	args := s.Called(ctx, silencedID)
-	return args.Get(0).(*types.Silenced), args.Error(1)
+func (s *MockStore) GetSilenceByName(ctx context.Context, namespace, silencedID string) (*v2.Silenced, error) {
+	args := s.Called(ctx, namespace, silencedID)
+	return args.Get(0).(*v2.Silenced), args.Error(1)
 }
 
-func (s *MockStore) GetSilencedEntriesByName(ctx context.Context, names ...string) ([]*types.Silenced, error) {
-	args := s.Called(ctx, names)
-	return args.Get(0).([]*types.Silenced), args.Error(1)
+func (s *MockStore) GetSilencesByName(ctx context.Context, namespace string, names []string) ([]*v2.Silenced, error) {
+	args := s.Called(ctx, namespace, names)
+	return args.Get(0).([]*v2.Silenced), args.Error(1)
 }
 
-// GetSilencedEntriesBySubscription ...
-func (s *MockStore) GetSilencedEntriesBySubscription(ctx context.Context, subscriptions ...string) ([]*types.Silenced, error) {
-	args := s.Called(ctx)
-	return args.Get(0).([]*types.Silenced), args.Error(1)
+func (s *MockStore) GetSilencesBySubscription(ctx context.Context, namespace string, subscriptions []string) ([]*v2.Silenced, error) {
+	args := s.Called(ctx, namespace, subscriptions)
+	return args.Get(0).([]*v2.Silenced), args.Error(1)
 }
 
-// GetSilencedEntriesByCheckName ...
-func (s *MockStore) GetSilencedEntriesByCheckName(ctx context.Context, checkName string) ([]*types.Silenced, error) {
-	args := s.Called(ctx)
-	return args.Get(0).([]*types.Silenced), args.Error(1)
+func (s *MockStore) GetSilencesByCheck(ctx context.Context, namespace, checkName string) ([]*v2.Silenced, error) {
+	args := s.Called(ctx, namespace, checkName)
+	return args.Get(0).([]*v2.Silenced), args.Error(1)
 }
 
-// UpdateSilencedEntry ...
-func (s *MockStore) UpdateSilencedEntry(ctx context.Context, silenced *types.Silenced) error {
+func (s *MockStore) UpdateSilence(ctx context.Context, silenced *v2.Silenced) error {
 	args := s.Called(ctx, silenced)
 	return args.Error(0)
 }

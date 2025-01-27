@@ -5,9 +5,10 @@ import (
 
 	"context"
 
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	corev2 "github.com/sensu/core/v2"
+	"github.com/sensu/sensu-go/backend/queue"
 	"github.com/sensu/sensu-go/backend/store"
-	"github.com/sensu/sensu-go/types"
+	storev2 "github.com/sensu/sensu-go/backend/store/v2"
 	utilstrings "github.com/sensu/sensu-go/util/strings"
 )
 
@@ -17,15 +18,15 @@ var (
 
 // CheckController exposes actions which a viewer can perform.
 type CheckController struct {
-	store      store.CheckConfigStore
-	checkQueue types.Queue
+	store      storev2.Interface
+	checkQueue queue.Client
 }
 
 // NewCheckController returns new CheckController
-func NewCheckController(store store.CheckConfigStore, getter types.QueueGetter) CheckController {
+func NewCheckController(store storev2.Interface, queue queue.Client) CheckController {
 	return CheckController{
 		store:      store,
-		checkQueue: getter.GetQueue(adhocQueueName),
+		checkQueue: queue,
 	}
 }
 
@@ -33,16 +34,17 @@ func NewCheckController(store store.CheckConfigStore, getter types.QueueGetter) 
 // viewer.
 func (a CheckController) Find(ctx context.Context, name string) (*corev2.CheckConfig, error) {
 	// Fetch from store
-	result, serr := a.store.GetCheckConfigByName(ctx, name)
-
-	if serr != nil {
-		return nil, NewError(InternalErr, serr)
+	cstore := storev2.Of[*corev2.CheckConfig](a.store)
+	check, err := cstore.Get(ctx, storev2.ID{Namespace: corev2.ContextNamespace(ctx), Name: name})
+	if err != nil {
+		if _, ok := err.(*store.ErrNotFound); ok {
+			return nil, NewErrorf(NotFound)
+		} else {
+			return nil, NewError(InternalErr, err)
+		}
 	}
-	if result == nil {
-		return nil, NewErrorf(NotFound)
-	}
 
-	return result, nil
+	return check, nil
 }
 
 // AddCheckHook adds an association between a hook and a check
@@ -96,34 +98,15 @@ func (a CheckController) RemoveCheckHook(ctx context.Context, checkName string, 
 	})
 }
 
-func (a CheckController) findCheckConfig(ctx context.Context, name string) (*corev2.CheckConfig, error) {
-	result, serr := a.store.GetCheckConfigByName(ctx, name)
-	if serr != nil {
-		return nil, NewError(InternalErr, serr)
-	} else if result == nil {
-		return nil, NewErrorf(NotFound)
-	}
-
-	return result, nil
-}
-
-func (a CheckController) updateCheckConfig(ctx context.Context, check *corev2.CheckConfig) error {
-	if err := a.store.UpdateCheckConfig(ctx, check); err != nil {
-		return NewError(InternalErr, err)
-	}
-
-	return nil
-}
-
 func (a CheckController) findAndUpdateCheckConfig(
 	ctx context.Context,
 	name string,
 	configureFn func(*corev2.CheckConfig) error,
 ) error {
 	// Find
-	check, serr := a.findCheckConfig(ctx, name)
-	if serr != nil {
-		return serr
+	check, err := a.Find(ctx, name)
+	if err != nil {
+		return err
 	}
 
 	// Configure
@@ -137,7 +120,8 @@ func (a CheckController) findAndUpdateCheckConfig(
 	}
 
 	// Update
-	return a.updateCheckConfig(ctx, check)
+	cstore := storev2.Of[*corev2.CheckConfig](a.store)
+	return cstore.CreateOrUpdate(ctx, check)
 }
 
 // QueueAdhocRequest takes a check request and adds it to the queue for
@@ -162,6 +146,9 @@ func (a CheckController) QueueAdhocRequest(ctx context.Context, name string, adh
 	if err != nil {
 		return err
 	}
-	err = a.checkQueue.Enqueue(ctx, string(marshaledCheck))
+	err = a.checkQueue.Enqueue(ctx, queue.Item{
+		Queue: adhocQueueName,
+		Value: marshaledCheck,
+	})
 	return err
 }

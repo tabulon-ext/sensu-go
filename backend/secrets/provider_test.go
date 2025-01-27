@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	corev2 "github.com/sensu/core/v2"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
@@ -21,13 +21,13 @@ func (m *mockProvider) Get(id string) (string, error) {
 }
 
 // GetObjectMeta ...
-func (m *mockProvider) GetObjectMeta() corev2.ObjectMeta {
+func (m *mockProvider) GetMetadata() *corev2.ObjectMeta {
 	args := m.Called()
-	return args.Get(0).(corev2.ObjectMeta)
+	return args.Get(0).(*corev2.ObjectMeta)
 }
 
 // SetObjectMeta ...
-func (m *mockProvider) SetObjectMeta(meta corev2.ObjectMeta) {}
+func (m *mockProvider) SetMetadata(_ *corev2.ObjectMeta) {}
 
 // RBACName ...
 func (m *mockProvider) RBACName() string {
@@ -35,11 +35,8 @@ func (m *mockProvider) RBACName() string {
 	return args.Get(0).(string)
 }
 
-// SetNamespace ...
-func (m *mockProvider) SetNamespace(namespace string) {}
-
-// StorePrefix ...
-func (m *mockProvider) StorePrefix() string {
+// StoreName ...
+func (m *mockProvider) StoreName() string {
 	args := m.Called()
 	return args.Get(0).(string)
 }
@@ -66,10 +63,20 @@ func (m *mockGetter) Get(ctx context.Context, name string) (string, string, erro
 	return args.Get(0).(string), args.Get(1).(string), args.Error(2)
 }
 
+type mockEventReceiver struct {
+	mock.Mock
+}
+
+func (m *mockEventReceiver) GenerateBackendEvent(component string, status uint32, output string) error {
+	args := m.Called(component, status, output)
+	return args.Error(0)
+}
+
 func TestProviderManager(t *testing.T) {
-	pm := NewProviderManager()
+	mer := &mockEventReceiver{}
+	pm := NewProviderManager(mer)
 	mp := &mockProvider{}
-	mp.On("GetObjectMeta", mock.Anything).Return(corev2.ObjectMeta{Name: "env"})
+	mp.On("GetMetadata", mock.Anything).Return(&corev2.ObjectMeta{Name: "env"})
 	pm.AddProvider(mp)
 	require.NotEmpty(t, pm.Providers())
 	require.Equal(t, 1, len(pm.Providers()))
@@ -83,21 +90,28 @@ func TestProviderManager(t *testing.T) {
 	require.Nil(t, pm.Getter)
 }
 func TestSubSecrets(t *testing.T) {
-	pm := NewProviderManager()
 	ctx := context.Background()
+
 	mg := &mockGetter{}
 	mg.On("Get", ctx, "sensu-foo").Return("env", "SENSU_FOO", nil)
 	mg.On("Get", ctx, "sensu-baby").Return("vault", "SENSU_BABY", nil)
 	mg.On("Get", ctx, "sensu-empty").Return("env", "SENSU_EMPTY", nil)
 	mg.On("Get", ctx, "sensu-baz").Return("env", "SENSU_BAZ", nil)
-	mg.On("Get", ctx, "sensu-err").Return("", "", fmt.Errorf("err on secrets store"))
+	mg.On("Get", ctx, "sensu-err").Return("", "", ErrSecretNotFound("sensu-err"))
 	mg.On("Get", ctx, "sensu-no-provider").Return("foo", "SENSU_NO_PROVIDER", nil)
 	mg.On("Get", ctx, "sensu-provider-err").Return("vault", "SENSU_PROVIDER_ERR", nil)
+
+	mer := &mockEventReceiver{}
+	mer.On("GenerateBackendEvent", "secrets", uint32(0), msgSecretsProviderOk).Return(nil)
+	mer.On("GenerateBackendEvent", "secrets", uint32(0), msgSecretsProviderOk).Return(nil)
+	mer.On("GenerateBackendEvent", "secrets", uint32(2), ErrProviderNotAvailable("vault").Error()).Return(nil)
+
+	pm := NewProviderManager(mer)
 	pm.Getter = mg
 
 	// no providers with secrets defined returns error
 	secretVars, err := pm.SubSecrets(ctx, []*corev2.Secret{
-		&corev2.Secret{
+		{
 			Name:   "FOO",
 			Secret: "sensu-foo",
 		},
@@ -108,7 +122,7 @@ func TestSubSecrets(t *testing.T) {
 
 	// create provider env
 	env := &mockProvider{}
-	env.On("GetObjectMeta", mock.Anything).Return(corev2.ObjectMeta{Name: "env"})
+	env.On("GetMetadata", mock.Anything).Return(&corev2.ObjectMeta{Name: "env"})
 	env.On("Get", "SENSU_FOO").Return("bar", nil)
 	env.On("Get", "SENSU_EMPTY").Return("", nil)
 	env.On("Get", "SENSU_BAZ").Return("boo", nil)
@@ -118,15 +132,13 @@ func TestSubSecrets(t *testing.T) {
 
 	// all found secrets are returned from a single provider
 	secretVars, err = pm.SubSecrets(ctx, []*corev2.Secret{
-		&corev2.Secret{
+		{
 			Name:   "FOO",
 			Secret: "sensu-foo",
-		},
-		&corev2.Secret{
+		}, {
 			Name:   "EMPTY",
 			Secret: "sensu-empty",
-		},
-		&corev2.Secret{
+		}, {
 			Name:   "BAZ",
 			Secret: "sensu-baz",
 		},
@@ -136,11 +148,10 @@ func TestSubSecrets(t *testing.T) {
 
 	// an error is returned if the provider errors
 	secretVars, err = pm.SubSecrets(ctx, []*corev2.Secret{
-		&corev2.Secret{
+		{
 			Name:   "FOO",
 			Secret: "sensu-foo",
-		},
-		&corev2.Secret{
+		}, {
 			Name:   "ERR",
 			Secret: "sensu-err",
 		},
@@ -160,20 +171,19 @@ func TestSubSecrets(t *testing.T) {
 
 	// create provider vault
 	vault := &mockProvider{}
-	vault.On("GetObjectMeta", mock.Anything).Return(corev2.ObjectMeta{Name: "vault"})
+	vault.On("GetMetadata", mock.Anything).Return(&corev2.ObjectMeta{Name: "vault"})
 	vault.On("Get", "SENSU_BABY").Return("yoda", nil)
 	vault.On("Get", "SENSU_FOO").Return("", nil)
-	vault.On("Get", "SENSU_PROVIDER_ERR").Return("", fmt.Errorf("err on provider"))
+	vault.On("Get", "SENSU_PROVIDER_ERR").Return("", ErrProviderNotAvailable("vault"))
 	pm.AddProvider(vault)
 	require.Equal(t, 2, len(pm.Providers()))
 
 	// all found secrets are returned from all providers
 	secretVars, err = pm.SubSecrets(ctx, []*corev2.Secret{
-		&corev2.Secret{
+		{
 			Name:   "FOO",
 			Secret: "sensu-foo",
-		},
-		&corev2.Secret{
+		}, {
 			Name:   "BABY",
 			Secret: "sensu-baby",
 		},
@@ -183,7 +193,7 @@ func TestSubSecrets(t *testing.T) {
 
 	// provider does not exist
 	secretVars, err = pm.SubSecrets(ctx, []*corev2.Secret{
-		&corev2.Secret{
+		{
 			Name:   "NO_PROVIDER",
 			Secret: "sensu-no-provider",
 		},
@@ -193,7 +203,7 @@ func TestSubSecrets(t *testing.T) {
 
 	// provider error getting secret
 	secretVars, err = pm.SubSecrets(ctx, []*corev2.Secret{
-		&corev2.Secret{
+		{
 			Name:   "PROVIDER_ERR",
 			Secret: "sensu-provider-err",
 		},

@@ -3,9 +3,10 @@ package api
 import (
 	"context"
 
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	corev2 "github.com/sensu/core/v2"
 	"github.com/sensu/sensu-go/backend/authorization"
 	"github.com/sensu/sensu-go/backend/store"
+	storev2 "github.com/sensu/sensu-go/backend/store/v2"
 )
 
 // MutatorClient is an API client for mutators.
@@ -15,7 +16,7 @@ type MutatorClient struct {
 }
 
 // NewMutatorClient creates a new MutatorClient, given a store and an authorizer.
-func NewMutatorClient(store store.ResourceStore, auth authorization.Authorizer) *MutatorClient {
+func NewMutatorClient(store storev2.Interface, auth authorization.Authorizer) *MutatorClient {
 	return &MutatorClient{
 		client: GenericClient{
 			Kind:       &corev2.Mutator{},

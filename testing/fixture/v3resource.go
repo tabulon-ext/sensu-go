@@ -3,19 +3,12 @@ package fixture
 import (
 	"fmt"
 
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
-	"github.com/sensu/sensu-go/types"
+	corev2 "github.com/sensu/core/v2"
+	apitools "github.com/sensu/sensu-api-tools"
 )
 
 func init() {
-	types.RegisterResolver("testing/fixture", func(name string) (interface{}, error) {
-		switch name {
-		case "V3Resource", "v3_resource":
-			return new(V3Resource), nil
-		default:
-			return nil, fmt.Errorf("invalid resource: %s", name)
-		}
-	})
+	apitools.RegisterType("testing/fixture", new(V3Resource), apitools.WithAlias("v3_resource"))
 }
 
 type V3Resource struct {
@@ -44,4 +37,11 @@ func (v *V3Resource) URIPath() string {
 
 func (v *V3Resource) Validate() error {
 	return nil
+}
+
+func (v *V3Resource) GetTypeMeta() corev2.TypeMeta {
+	return corev2.TypeMeta{
+		Type:       "V3Resource",
+		APIVersion: "testing/fixture",
+	}
 }

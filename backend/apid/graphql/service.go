@@ -23,28 +23,29 @@ type ClientFactory interface {
 
 // ServiceConfig describes values required to instantiate service.
 type ServiceConfig struct {
-	AssetClient       AssetClient
-	CheckClient       CheckClient
-	EntityClient      EntityClient
-	EventClient       EventClient
-	EventFilterClient EventFilterClient
-	HandlerClient     HandlerClient
-	HealthController  EtcdHealthController
-	MutatorClient     MutatorClient
-	SilencedClient    SilencedClient
-	NamespaceClient   NamespaceClient
-	HookClient        HookClient
-	UserClient        UserClient
-	RBACClient        RBACClient
-	VersionController VersionController
-	GenericClient     GenericClient
-	MetricGatherer    MetricGatherer
+	AssetClient        AssetClient
+	CheckClient        CheckClient
+	EntityClient       EntityClient
+	EventClient        EventClient
+	EventFilterClient  EventFilterClient
+	HandlerClient      HandlerClient
+	HealthController   EtcdHealthController
+	MutatorClient      MutatorClient
+	SilencedClient     SilencedClient
+	NamespaceClient    NamespaceClient
+	HookClient         HookClient
+	UserClient         UserClient
+	RBACClient         RBACClient
+	VersionController  VersionController
+	GenericClient      GenericClient
+	MetricGatherer     MetricGatherer
+	ClusterMetricStore ClusterMetricStore
 }
 
 // Service describes the Sensu GraphQL service capable of handling queries.
 type Service struct {
 	Target       *graphql.Service
-	Config       ServiceConfig
+	Config       *ServiceConfig
 	NodeRegister *relay.NodeRegister
 }
 
@@ -56,7 +57,7 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 	nodeResolver := relay.Resolver{Register: &nodeRegister}
 	wrapper := Service{
 		Target:       svc,
-		Config:       cfg,
+		Config:       &cfg,
 		NodeRegister: &nodeRegister,
 	}
 
@@ -65,8 +66,22 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 
 	// Register types
 	schema.RegisterAsset(svc, &assetImpl{})
+	schema.RegisterCoreV2AssetBuild(svc, &schema.CoreV2AssetBuildAliases{})
+	schema.RegisterCoreV2Deregistration(svc, &schema.CoreV2DeregistrationAliases{})
+	schema.RegisterCoreV2Network(svc, &schema.CoreV2NetworkAliases{})
+	schema.RegisterCoreV2NetworkInterface(svc, &schema.CoreV2NetworkInterfaceAliases{})
+	schema.RegisterCoreV2Pipeline(svc, &corev2PipelineImpl{})
+	schema.RegisterCoreV2PipelineExtensionOverrides(svc, &corev2PipelineImpl{})
+	schema.RegisterCoreV2PipelineWorkflow(svc, &schema.CoreV2PipelineWorkflowAliases{})
+	schema.RegisterCoreV2Process(svc, &schema.CoreV2ProcessAliases{})
+	schema.RegisterCoreV2ResourceReference(svc, &schema.CoreV2ResourceReferenceAliases{})
 	schema.RegisterCoreV2Secret(svc, &schema.CoreV2SecretAliases{})
-	schema.RegisterNamespace(svc, &namespaceImpl{client: cfg.NamespaceClient, eventClient: cfg.EventClient})
+	schema.RegisterCoreV2System(svc, &schema.CoreV2SystemAliases{})
+	schema.RegisterCoreV3EntityConfig(svc, &corev3EntityConfigImpl{})
+	schema.RegisterCoreV3EntityConfigExtensionOverrides(svc, &corev3EntityConfigExtImpl{client: cfg.GenericClient, entityClient: cfg.EntityClient})
+	schema.RegisterCoreV3EntityState(svc, &corev3EntityStateImpl{})
+	schema.RegisterCoreV3EntityStateExtensionOverrides(svc, &corev3EntityStateExtImpl{client: cfg.GenericClient, entityClient: cfg.EntityClient})
+	schema.RegisterNamespace(svc, &namespaceImpl{client: cfg.NamespaceClient, entityClient: cfg.EntityClient, eventClient: cfg.EventClient, serviceConfig: &cfg})
 	schema.RegisterErrCode(svc)
 	schema.RegisterEvent(svc, &eventImpl{})
 	schema.RegisterEventsListOrder(svc)
@@ -156,13 +171,17 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 	schema.RegisterTimeWindowTimeRange(svc, &schema.TimeWindowTimeRangeAliases{})
 
 	// Register RBAC types
-	schema.RegisterClusterRole(svc, &schema.ClusterRoleAliases{})
-	schema.RegisterClusterRoleBinding(svc, &schema.ClusterRoleBindingAliases{})
-	schema.RegisterRole(svc, &schema.RoleAliases{})
-	schema.RegisterRoleBinding(svc, &schema.RoleBindingAliases{})
-	schema.RegisterRoleRef(svc, &schema.RoleRefAliases{})
-	schema.RegisterRule(svc, &schema.RuleAliases{})
-	schema.RegisterSubject(svc, &schema.SubjectAliases{})
+	schema.RegisterCoreV2ClusterRole(svc, &clusterRoleImpl{})
+	schema.RegisterCoreV2ClusterRoleExtensionOverrides(svc, &clusterRoleImpl{})
+	schema.RegisterCoreV2ClusterRoleBinding(svc, &clusterRoleBindingImpl{})
+	schema.RegisterCoreV2ClusterRoleBindingExtensionOverrides(svc, &clusterRoleBindingImpl{})
+	schema.RegisterCoreV2Role(svc, &roleImpl{})
+	schema.RegisterCoreV2RoleExtensionOverrides(svc, &roleImpl{})
+	schema.RegisterCoreV2RoleBinding(svc, &roleBindingImpl{})
+	schema.RegisterCoreV2RoleBindingExtensionOverrides(svc, &roleBindingImpl{})
+	schema.RegisterCoreV2RoleRef(svc, &schema.CoreV2RoleRefAliases{})
+	schema.RegisterCoreV2Rule(svc, &schema.CoreV2RuleAliases{})
+	schema.RegisterCoreV2Subject(svc, &schema.CoreV2SubjectAliases{})
 
 	// Register user types
 	schema.RegisterUser(svc, &userImpl{})
@@ -200,6 +219,12 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 
 	// Configure tracing
 	tracer := tracing.NewPrometheusTracer()
+	tracer.AllowList = []string{
+		tracing.KeyParse,
+		tracing.KeyValidate,
+		tracing.KeyExecuteQuery,
+		tracing.KeyExecuteField,
+	}
 	svc.RegisterMiddleware(tracer)
 
 	err := svc.Regenerate()
@@ -209,7 +234,7 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 // Do executes given query string and variables
 func (svc *Service) Do(ctx context.Context, p graphql.QueryParams) *graphql.Result {
 	// Instantiate loaders and lift them into the context
-	qryCtx := contextWithLoaders(ctx, svc.Config)
+	qryCtx := contextWithLoaders(ctx, *svc.Config)
 
 	// Execute query inside context
 	return svc.Target.Do(qryCtx, p)

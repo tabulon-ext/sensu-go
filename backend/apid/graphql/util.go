@@ -4,7 +4,7 @@ import (
 	"sort"
 	"time"
 
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	corev2 "github.com/sensu/core/v2"
 	"github.com/sensu/sensu-go/backend/apid/graphql/schema"
 )
 
@@ -16,6 +16,14 @@ func clampInt(num, min, max int) int {
 		return max
 	}
 	return num
+}
+
+// minInt returns smaller of x or y.
+func minInt(x, y int) int {
+	if x > y {
+		return y
+	}
+	return x
 }
 
 // maxInt returns larger of x or y.

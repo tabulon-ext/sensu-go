@@ -7,7 +7,8 @@ import (
 	"testing"
 
 	dto "github.com/prometheus/client_model/go"
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	corev2 "github.com/sensu/core/v2"
+	corev3 "github.com/sensu/core/v3"
 	"github.com/sensu/sensu-go/backend/apid/graphql/schema"
 	"github.com/sensu/sensu-go/graphql"
 	"github.com/stretchr/testify/assert"
@@ -52,12 +53,12 @@ func TestQueryTypeNamespaceField(t *testing.T) {
 	cfg := ServiceConfig{NamespaceClient: client}
 	impl := queryImpl{svc: cfg}
 
-	nsp := corev2.FixtureNamespace("sensu")
+	nsp := corev3.FixtureNamespace("sensu")
 	params := schema.QueryNamespaceFieldResolverParams{ResolveParams: graphql.ResolveParams{Context: context.Background()}}
-	params.Args.Name = nsp.Name
+	params.Args.Name = nsp.Metadata.Name
 
 	// Success
-	client.On("FetchNamespace", mock.Anything, nsp.Name).Return(nsp, nil).Once()
+	client.On("FetchNamespace", mock.Anything, nsp.Metadata.Name).Return(nsp, nil).Once()
 	res, err := impl.Namespace(params)
 	require.NoError(t, err)
 	assert.NotEmpty(t, res)
@@ -136,12 +137,26 @@ func TestQueryTypeSuggestField(t *testing.T) {
 	cfg := ServiceConfig{GenericClient: client}
 	impl := queryImpl{svc: cfg}
 
+	prevGlobalFilters := GlobalFilters
+	GlobalFilters = CheckFilters()
+	defer func() {
+		GlobalFilters = prevGlobalFilters
+	}()
+
 	params := schema.QuerySuggestFieldResolverParams{ResolveParams: graphql.ResolveParams{Context: context.Background()}}
 	params.Args.Namespace = "default"
 	params.Args.Ref = "core/v2/check_config/subscriptions"
+	params.Args.Filters = []string{"published: true"}
+	params.Args.Q = "sql"
 
 	// Success
-	client.On("List", mock.Anything, mock.Anything, mock.Anything).Return(nil).Once()
+	client.On("List", mock.Anything, mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
+		arg := args.Get(1).(*[]*corev2.CheckConfig)
+		*arg = []*corev2.CheckConfig{
+			{Publish: true, Subscriptions: []string{"bsd", "psql"}},
+			{Publish: false, Subscriptions: []string{"windows", "mssql"}},
+		}
+	}).Return(nil).Once()
 	client.On("SetTypeMeta", mock.Anything).Return(nil)
 	res, err := impl.Suggest(params)
 	require.NoError(t, err)

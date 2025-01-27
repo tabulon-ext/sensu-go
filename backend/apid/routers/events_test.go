@@ -9,7 +9,8 @@ import (
 	"testing"
 
 	"github.com/gorilla/mux"
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	corev2 "github.com/sensu/core/v2"
+	corev3 "github.com/sensu/core/v3"
 	"github.com/sensu/sensu-go/backend/apid/actions"
 	"github.com/sensu/sensu-go/backend/store"
 	"github.com/stretchr/testify/mock"
@@ -32,9 +33,9 @@ func (m *mockEventController) Get(ctx context.Context, entity, check string) (*c
 	return args.Get(0).(*corev2.Event), args.Error(1)
 }
 
-func (m *mockEventController) List(ctx context.Context, pred *store.SelectionPredicate) ([]corev2.Resource, error) {
+func (m *mockEventController) List(ctx context.Context, pred *store.SelectionPredicate) ([]corev3.Resource, error) {
 	args := m.Called(ctx, pred)
-	return args.Get(0).([]corev2.Resource), args.Error(1)
+	return args.Get(0).([]corev3.Resource), args.Error(1)
 }
 
 func TestEventsRouter(t *testing.T) {
@@ -94,7 +95,7 @@ func TestEventsRouter(t *testing.T) {
 			path:   empty.URIPath(),
 			controllerFunc: func(c *mockEventController) {
 				c.On("List", mock.Anything, mock.AnythingOfType("*store.SelectionPredicate")).
-					Return([]corev2.Resource{empty}, actions.NewErrorf(actions.InternalErr)).
+					Return([]corev3.Resource{empty}, actions.NewErrorf(actions.InternalErr)).
 					Once()
 			},
 			wantStatusCode: http.StatusInternalServerError,
@@ -105,7 +106,7 @@ func TestEventsRouter(t *testing.T) {
 			path:   empty.URIPath(),
 			controllerFunc: func(c *mockEventController) {
 				c.On("List", mock.Anything, mock.AnythingOfType("*store.SelectionPredicate")).
-					Return([]corev2.Resource{fixture}, nil).
+					Return([]corev3.Resource{fixture}, nil).
 					Once()
 			},
 			wantStatusCode: http.StatusOK,
@@ -121,7 +122,7 @@ func TestEventsRouter(t *testing.T) {
 			name:   "it returns 400 if the event to create is not valid",
 			method: http.MethodPost,
 			path:   empty.URIPath(),
-			body:   marshal(fixture),
+			body:   marshalWrapped(fixture),
 			controllerFunc: func(c *mockEventController) {
 				c.On("CreateOrReplace", mock.Anything, mock.Anything).
 					Return(actions.NewErrorf(actions.InvalidArgument)).
@@ -133,7 +134,7 @@ func TestEventsRouter(t *testing.T) {
 			name:   "it returns 500 if the store returns an error while creating an event",
 			method: http.MethodPost,
 			path:   empty.URIPath(),
-			body:   marshal(fixture),
+			body:   marshalWrapped(fixture),
 			controllerFunc: func(c *mockEventController) {
 				c.On("CreateOrReplace", mock.Anything, mock.Anything).
 					Return(actions.NewErrorf(actions.InternalErr)).
@@ -145,7 +146,7 @@ func TestEventsRouter(t *testing.T) {
 			name:   "it returns 201 when an event is successfully created",
 			method: http.MethodPost,
 			path:   empty.URIPath(),
-			body:   marshal(fixture),
+			body:   marshalWrapped(fixture),
 			controllerFunc: func(c *mockEventController) {
 				c.On("CreateOrReplace", mock.Anything, mock.Anything).
 					Return(nil).
@@ -181,7 +182,7 @@ func TestEventsRouter(t *testing.T) {
 			name:   "it returns 400 if the event to update is not valid",
 			method: http.MethodPut,
 			path:   fixture.URIPath(),
-			body:   marshal(fixture),
+			body:   marshalWrapped(fixture),
 			controllerFunc: func(c *mockEventController) {
 				c.On("CreateOrReplace", mock.Anything, mock.Anything).
 					Return(actions.NewErrorf(actions.InvalidArgument)).
@@ -193,7 +194,7 @@ func TestEventsRouter(t *testing.T) {
 			name:   "it returns 500 if the store returns an error while updating an event",
 			method: http.MethodPut,
 			path:   fixture.URIPath(),
-			body:   marshal(fixture),
+			body:   marshalWrapped(fixture),
 			controllerFunc: func(c *mockEventController) {
 				c.On("CreateOrReplace", mock.Anything, mock.Anything).
 					Return(actions.NewErrorf(actions.InternalErr)).
@@ -205,7 +206,7 @@ func TestEventsRouter(t *testing.T) {
 			name:   "it returns 201 when an event is successfully updated",
 			method: http.MethodPut,
 			path:   fixture.URIPath(),
-			body:   marshal(fixture),
+			body:   marshalWrapped(fixture),
 			controllerFunc: func(c *mockEventController) {
 				c.On("CreateOrReplace", mock.Anything, mock.Anything).
 					Return(nil).
@@ -217,7 +218,7 @@ func TestEventsRouter(t *testing.T) {
 			name:   "it returns 201 when an event does not provide a namespace (using url namespace)",
 			method: http.MethodPut,
 			path:   fixture.URIPath(),
-			body:   marshal(fixture_wo_namespace),
+			body:   marshalWrapped(fixture_wo_namespace),
 			controllerFunc: func(c *mockEventController) {
 				c.On("CreateOrReplace", mock.Anything, mock.Anything).
 					Return(nil).
@@ -281,7 +282,7 @@ func TestEventsRouter(t *testing.T) {
 			name:   "it returns 400 if the event to update is invalid (post)",
 			method: http.MethodPost,
 			path:   fixture.URIPath(),
-			body:   marshal(fixture),
+			body:   marshalWrapped(fixture),
 			controllerFunc: func(c *mockEventController) {
 				c.On("CreateOrReplace", mock.Anything, mock.Anything).
 					Return(actions.NewErrorf(actions.InvalidArgument)).
@@ -293,7 +294,7 @@ func TestEventsRouter(t *testing.T) {
 			name:   "it returns 500 if the store returns an error while updating an event (post)",
 			method: http.MethodPost,
 			path:   fixture.URIPath(),
-			body:   marshal(fixture),
+			body:   marshalWrapped(fixture),
 			controllerFunc: func(c *mockEventController) {
 				c.On("CreateOrReplace", mock.Anything, mock.Anything).
 					Return(actions.NewErrorf(actions.InternalErr)).
@@ -305,7 +306,7 @@ func TestEventsRouter(t *testing.T) {
 			name:   "it returns 201 when an event is successfully updated (post)",
 			method: http.MethodPost,
 			path:   fixture.URIPath(),
-			body:   marshal(fixture),
+			body:   marshalWrapped(fixture),
 			controllerFunc: func(c *mockEventController) {
 				c.On("CreateOrReplace", mock.Anything, mock.Anything).
 					Return(nil).

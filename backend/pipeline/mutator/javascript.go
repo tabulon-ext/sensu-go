@@ -10,9 +10,8 @@ import (
 	"time"
 
 	"github.com/robertkrimen/otto"
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	corev2 "github.com/sensu/core/v2"
 	"github.com/sensu/sensu-go/asset"
-	"github.com/sensu/sensu-go/backend/store"
 	"github.com/sensu/sensu-go/js"
 	"github.com/sirupsen/logrus"
 )
@@ -23,15 +22,13 @@ const (
 )
 
 var (
-	halt = errors.New("halt")
+	errHalt = errors.New("halt")
 )
 
 // JavascriptAdapter is a mutator adapter which mutates an event using
 // javascript.
 type JavascriptAdapter struct {
-	AssetGetter  asset.Getter
-	Store        store.Store
-	StoreTimeout time.Duration
+	AssetGetter asset.Getter
 }
 
 // Name returns the name of the mutator adapter.
@@ -146,7 +143,7 @@ func (m *MutatorExecutionEnvironment) Eval(ctx context.Context, expression strin
 		}
 		vm.Interrupt = make(chan func(), 1)
 		defer func() {
-			if e := recover(); e != nil && e == halt {
+			if e := recover(); e != nil && e == errHalt {
 				err = errors.New("mutator timeout reached, execution halted")
 			} else if e != nil {
 				panic(e)
@@ -158,7 +155,7 @@ func (m *MutatorExecutionEnvironment) Eval(ctx context.Context, expression strin
 				select {
 				case <-time.After(m.Timeout):
 					vm.Interrupt <- func() {
-						panic(halt)
+						panic(errHalt)
 					}
 				case <-done:
 				}

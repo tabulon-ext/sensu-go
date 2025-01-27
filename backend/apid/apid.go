@@ -13,18 +13,20 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	clientv3 "go.etcd.io/etcd/client/v3"
 
+	v2 "github.com/sensu/core/v2"
+	corev3 "github.com/sensu/core/v3"
+	"github.com/sensu/sensu-go/backend/api"
 	"github.com/sensu/sensu-go/backend/apid/actions"
 	"github.com/sensu/sensu-go/backend/apid/graphql"
+	"github.com/sensu/sensu-go/backend/apid/handlers"
 	"github.com/sensu/sensu-go/backend/apid/middlewares"
 	"github.com/sensu/sensu-go/backend/apid/routers"
 	"github.com/sensu/sensu-go/backend/authentication"
 	"github.com/sensu/sensu-go/backend/authorization/rbac"
 	"github.com/sensu/sensu-go/backend/messaging"
-	"github.com/sensu/sensu-go/backend/store"
+	"github.com/sensu/sensu-go/backend/queue"
 	storev2 "github.com/sensu/sensu-go/backend/store/v2"
-	"github.com/sensu/sensu-go/types"
 )
 
 // APId is the backend HTTP API.
@@ -32,23 +34,18 @@ type APId struct {
 	Authenticator              *authentication.Authenticator
 	HTTPServer                 *http.Server
 	CoreSubrouter              *mux.Router
+	CoreV3Subrouter            *mux.Router
 	EntityLimitedCoreSubrouter *mux.Router
 	GraphQLSubrouter           *mux.Router
 	RequestLimit               int64
 
-	stopping            chan struct{}
-	running             *atomic.Value
-	wg                  *sync.WaitGroup
-	errChan             chan error
-	bus                 messaging.MessageBus
-	store               store.Store
-	storev2             storev2.Interface
-	eventStore          store.EventStore
-	queueGetter         types.QueueGetter
-	tls                 *types.TLSOptions
-	cluster             clientv3.Cluster
-	etcdClientTLSConfig *tls.Config
-	clusterVersion      string
+	stopping chan struct{}
+	running  *atomic.Value
+	wg       *sync.WaitGroup
+	errChan  chan error
+	bus      messaging.MessageBus
+	store    storev2.Interface
+	tls      *v2.TLSOptions
 }
 
 // Option is a functional option.
@@ -56,42 +53,31 @@ type Option func(*APId) error
 
 // Config configures APId.
 type Config struct {
-	ListenAddress       string
-	RequestLimit        int64
-	WriteTimeout        time.Duration
-	URL                 string
-	Bus                 messaging.MessageBus
-	Store               store.Store
-	Storev2             storev2.Interface
-	EventStore          store.EventStore
-	QueueGetter         types.QueueGetter
-	TLS                 *types.TLSOptions
-	Cluster             clientv3.Cluster
-	EtcdClientTLSConfig *tls.Config
-	Authenticator       *authentication.Authenticator
-	ClusterVersion      string
-	GraphQLService      *graphql.Service
-	HealthRouter        *routers.HealthRouter
+	ListenAddress  string
+	RequestLimit   int64
+	WriteTimeout   time.Duration
+	URL            string
+	Bus            messaging.MessageBus
+	Store          storev2.Interface
+	TLS            *v2.TLSOptions
+	Authenticator  *authentication.Authenticator
+	ClusterVersion string
+	GraphQLService *graphql.Service
+	Queue          queue.Client
 }
 
 // New creates a new APId.
 func New(c Config, opts ...Option) (*APId, error) {
 	a := &APId{
-		store:               c.Store,
-		storev2:             c.Storev2,
-		eventStore:          c.EventStore,
-		queueGetter:         c.QueueGetter,
-		tls:                 c.TLS,
-		bus:                 c.Bus,
-		stopping:            make(chan struct{}, 1),
-		running:             &atomic.Value{},
-		wg:                  &sync.WaitGroup{},
-		errChan:             make(chan error, 1),
-		cluster:             c.Cluster,
-		etcdClientTLSConfig: c.EtcdClientTLSConfig,
-		Authenticator:       c.Authenticator,
-		clusterVersion:      c.ClusterVersion,
-		RequestLimit:        c.RequestLimit,
+		store:         c.Store,
+		tls:           c.TLS,
+		bus:           c.Bus,
+		stopping:      make(chan struct{}, 1),
+		running:       &atomic.Value{},
+		wg:            &sync.WaitGroup{},
+		errChan:       make(chan error, 1),
+		Authenticator: c.Authenticator,
+		RequestLimit:  c.RequestLimit,
 	}
 
 	// prepare TLS config
@@ -109,6 +95,7 @@ func New(c Config, opts ...Option) (*APId, error) {
 	a.GraphQLSubrouter = GraphQLSubrouter(router, c)
 	_ = AuthenticationSubrouter(router, c)
 	a.CoreSubrouter = CoreSubrouter(router, c)
+	a.CoreV3Subrouter = CoreV3Subrouter(router, c)
 	a.EntityLimitedCoreSubrouter = EntityLimitedCoreSubrouter(router, c)
 
 	a.HTTPServer = &http.Server{
@@ -150,7 +137,7 @@ func AuthenticationSubrouter(router *mux.Router, cfg Config) *mux.Router {
 	)
 
 	mountRouters(subrouter,
-		routers.NewAuthenticationRouter(cfg.Store, cfg.Authenticator),
+		routers.NewAuthenticationRouter(api.NewAuthenticationClient(cfg.Authenticator)),
 	)
 
 	return subrouter
@@ -168,20 +155,19 @@ func CoreSubrouter(router *mux.Router, cfg Config) *mux.Router {
 		middlewares.Authorization{Authorizer: &rbac.Authorizer{Store: cfg.Store}},
 		middlewares.LimitRequest{Limit: cfg.RequestLimit},
 		middlewares.Pagination{},
+		middlewares.Selectors{},
 	)
 	mountRouters(
 		subrouter,
 		routers.NewAssetRouter(cfg.Store),
 		routers.NewAPIKeysRouter(cfg.Store),
-		routers.NewChecksRouter(cfg.Store, cfg.QueueGetter),
+		routers.NewChecksRouter(cfg.Store, cfg.Queue),
 		routers.NewClusterRolesRouter(cfg.Store),
 		routers.NewClusterRoleBindingsRouter(cfg.Store),
-		routers.NewClusterRouter(actions.NewClusterController(cfg.Cluster, cfg.Store)),
 		routers.NewEventFiltersRouter(cfg.Store),
 		routers.NewHandlersRouter(cfg.Store),
 		routers.NewHooksRouter(cfg.Store),
 		routers.NewMutatorsRouter(cfg.Store),
-		routers.NewNamespacesRouter(cfg.Store, cfg.Store, &rbac.Authorizer{Store: cfg.Store}, cfg.Storev2),
 		routers.NewPipelinesRouter(cfg.Store),
 		routers.NewRolesRouter(cfg.Store),
 		routers.NewRoleBindingsRouter(cfg.Store),
@@ -190,6 +176,25 @@ func CoreSubrouter(router *mux.Router, cfg Config) *mux.Router {
 		routers.NewUsersRouter(cfg.Store),
 	)
 
+	return subrouter
+}
+
+func CoreV3Subrouter(router *mux.Router, cfg Config) *mux.Router {
+	subrouter := NewSubrouter(
+		router.PathPrefix("/api/{group:core}/{version:v3}/"),
+		middlewares.Namespace{},
+		middlewares.Authentication{Store: cfg.Store},
+		middlewares.SimpleLogger{},
+		middlewares.AuthorizationAttributes{},
+		middlewares.Authorization{Authorizer: &rbac.Authorizer{Store: cfg.Store}},
+		middlewares.LimitRequest{Limit: cfg.RequestLimit},
+		middlewares.Pagination{},
+		middlewares.Selectors{},
+	)
+	mountRouters(
+		subrouter,
+		routers.NewNamespacesRouter(api.NewNamespaceClient(cfg.Store, &rbac.Authorizer{Store: cfg.Store}), handlers.NewHandlers[*corev3.Namespace](cfg.Store)),
+	)
 	return subrouter
 }
 
@@ -205,11 +210,12 @@ func EntityLimitedCoreSubrouter(router *mux.Router, cfg Config) *mux.Router {
 		middlewares.Authorization{Authorizer: &rbac.Authorizer{Store: cfg.Store}},
 		middlewares.LimitRequest{Limit: cfg.RequestLimit},
 		middlewares.Pagination{},
+		middlewares.Selectors{},
 	)
 	mountRouters(
 		subrouter,
-		routers.NewEntitiesRouter(cfg.Store, cfg.Storev2, cfg.EventStore),
-		routers.NewEventsRouter(cfg.EventStore, cfg.Bus),
+		routers.NewEntitiesRouter(cfg.Store),
+		routers.NewEventsRouter(cfg.Store, cfg.Bus),
 	)
 
 	return subrouter
@@ -261,7 +267,6 @@ func PublicSubrouter(router *mux.Router, cfg Config) *mux.Router {
 	)
 
 	mountRouters(subrouter,
-		cfg.HealthRouter,
 		routers.NewVersionRouter(actions.NewVersionController(cfg.ClusterVersion)),
 		routers.NewTessenMetricRouter(actions.NewTessenMetricController(cfg.Bus)),
 	)
@@ -271,7 +276,7 @@ func PublicSubrouter(router *mux.Router, cfg Config) *mux.Router {
 	return subrouter
 }
 
-func notFoundHandler(w http.ResponseWriter, req *http.Request) {
+func notFoundHandler(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusNotFound)
 	resp := map[string]interface{}{
 		"message": "not found", "code": actions.NotFound,

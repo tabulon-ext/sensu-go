@@ -4,19 +4,20 @@ import (
 	"context"
 	"fmt"
 
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	corev2 "github.com/sensu/core/v2"
 	"github.com/sensu/sensu-go/backend/authorization"
 	"github.com/sensu/sensu-go/backend/store"
+	storev2 "github.com/sensu/sensu-go/backend/store/v2"
 )
 
 // SilencedClient is an API client for silencing checks.
 type SilencedClient struct {
-	store store.SilencedStore
+	store storev2.SilencesStore
 	auth  authorization.Authorizer
 }
 
 // NewSilencedClient creates a new SilencedClient, given a store and authorizer.
-func NewSilencedClient(store store.SilencedStore, auth authorization.Authorizer) *SilencedClient {
+func NewSilencedClient(store store.SilenceStore, auth authorization.Authorizer) *SilencedClient {
 	return &SilencedClient{
 		store: store,
 		auth:  auth,
@@ -34,7 +35,7 @@ func (s *SilencedClient) UpdateSilenced(ctx context.Context, silenced *corev2.Si
 		return err
 	}
 	setCreatedBy(ctx, silenced)
-	if err := s.store.UpdateSilencedEntry(ctx, silenced); err != nil {
+	if err := s.store.UpdateSilence(ctx, silenced); err != nil {
 		return fmt.Errorf("couldn't update silenced entry: %s", err)
 	}
 	return nil
@@ -46,7 +47,7 @@ func (s *SilencedClient) GetSilencedByName(ctx context.Context, name string) (*c
 	if err := authorize(ctx, s.auth, attrs); err != nil {
 		return nil, err
 	}
-	silenced, err := s.store.GetSilencedEntryByName(ctx, name)
+	silenced, err := s.store.GetSilenceByName(ctx, corev2.ContextNamespace(ctx), name)
 	if err != nil {
 		return nil, fmt.Errorf("couldn't get silenced entry: %s", err)
 	}
@@ -59,7 +60,7 @@ func (s *SilencedClient) DeleteSilencedByName(ctx context.Context, name string) 
 	if err := authorize(ctx, s.auth, attrs); err != nil {
 		return err
 	}
-	if err := s.store.DeleteSilencedEntryByName(ctx, name); err != nil {
+	if err := s.store.DeleteSilences(ctx, corev2.ContextNamespace(ctx), []string{name}); err != nil {
 		return fmt.Errorf("couldn't delete silenced entry: %s", err)
 	}
 	return nil
@@ -71,7 +72,7 @@ func (s *SilencedClient) ListSilenced(ctx context.Context) ([]*corev2.Silenced, 
 	if err := authorize(ctx, s.auth, attrs); err != nil {
 		return nil, err
 	}
-	silenceds, err := s.store.GetSilencedEntries(ctx)
+	silenceds, err := s.store.GetSilences(ctx, corev2.ContextNamespace(ctx))
 	if err != nil {
 		return nil, fmt.Errorf("couldn't list silenced entries: %s", err)
 	}
@@ -86,7 +87,7 @@ func (s *SilencedClient) GetSilencedByCheckName(ctx context.Context, check strin
 	if err := authorize(ctx, s.auth, attrs); err != nil {
 		return nil, err
 	}
-	silenceds, err := s.store.GetSilencedEntriesByCheckName(ctx, check)
+	silenceds, err := s.store.GetSilencesByCheck(ctx, corev2.ContextNamespace(ctx), check)
 	if err != nil {
 		return nil, fmt.Errorf("couldn't list silenced entries: %s", err)
 	}
@@ -100,7 +101,7 @@ func (s *SilencedClient) GetSilencedBySubscription(ctx context.Context, subs ...
 	if err := authorize(ctx, s.auth, attrs); err != nil {
 		return nil, err
 	}
-	silenceds, err := s.store.GetSilencedEntriesBySubscription(ctx, subs...)
+	silenceds, err := s.store.GetSilencesBySubscription(ctx, corev2.ContextNamespace(ctx), subs)
 	if err != nil {
 		return nil, fmt.Errorf("couldn't list silenced entries: %s", err)
 	}

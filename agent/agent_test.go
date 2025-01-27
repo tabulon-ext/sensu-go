@@ -1,5 +1,3 @@
-// +build integration
-
 package agent
 
 import (
@@ -13,10 +11,9 @@ import (
 	"testing"
 	"time"
 
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	corev2 "github.com/sensu/core/v2"
 	sensutesting "github.com/sensu/sensu-go/testing"
 	"github.com/sensu/sensu-go/transport"
-	"github.com/sensu/sensu-go/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -46,7 +43,7 @@ func TestTLSAuth(t *testing.T) {
 			assert.NoError(t, err)
 			assert.Equal(t, "keepalive", msg.Type)
 
-			event := &types.Event{}
+			event := &corev2.Event{}
 			assert.NoError(t, json.Unmarshal(msg.Payload, event))
 			assert.NotNil(t, event.Entity)
 			assert.Equal(t, "agent", event.Entity.EntityClass)
@@ -80,7 +77,6 @@ func TestTLSAuth(t *testing.T) {
 	wsURL := strings.Replace(ts.URL, "https", "wss", 1)
 	cfg.BackendURLs = []string{wsURL}
 	cfg.API.Port = 0
-	cfg.Socket.Port = 0
 	cfg.Password = ""
 
 	ta, err := NewAgent(cfg)
@@ -112,7 +108,7 @@ func TestSendLoop(t *testing.T) {
 			assert.NoError(t, err)
 			assert.Equal(t, "keepalive", msg.Type)
 
-			event := &types.Event{}
+			event := &corev2.Event{}
 			assert.NoError(t, json.Unmarshal(msg.Payload, event))
 			assert.NotNil(t, event.Entity)
 			assert.Equal(t, "agent", event.Entity.EntityClass)
@@ -129,7 +125,6 @@ func TestSendLoop(t *testing.T) {
 	defer cleanup()
 	cfg.BackendURLs = []string{wsURL}
 	cfg.API.Port = 0
-	cfg.Socket.Port = 0
 	ta, err := NewAgent(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -174,7 +169,6 @@ func TestReceiveLoop(t *testing.T) {
 	defer cleanup()
 	cfg.BackendURLs = []string{wsURL}
 	cfg.API.Port = 0
-	cfg.Socket.Port = 0
 	ta, err := NewAgent(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -215,7 +209,7 @@ func TestKeepaliveLoggingRedaction(t *testing.T) {
 			assert.NoError(t, err)
 			assert.Equal(t, "keepalive", msg.Type)
 
-			event := &types.Event{}
+			event := &corev2.Event{}
 			assert.NoError(t, json.Unmarshal(msg.Payload, event))
 			assert.NotNil(t, event.Entity)
 			assert.Equal(t, "agent", event.Entity.EntityClass)
@@ -225,12 +219,12 @@ func TestKeepaliveLoggingRedaction(t *testing.T) {
 			// Make sure the ec2_access_key attribute is redacted, which indicates it was
 			// received as such in keepalives
 			label := event.Entity.Labels["ec2_access_key"]
-			if got, want := label, types.Redacted; got != want {
+			if got, want := label, corev2.Redacted; got != want {
 				errors <- fmt.Errorf("%q != %q", got, want)
 			}
 
 			label = event.Entity.Labels["secret"]
-			if got, want := label, types.Redacted; got == want {
+			if got, want := label, corev2.Redacted; got == want {
 				errors <- fmt.Errorf("secret was redacted")
 			}
 
@@ -248,7 +242,6 @@ func TestKeepaliveLoggingRedaction(t *testing.T) {
 	cfg.Redact = []string{"ec2_access_key"}
 	cfg.BackendURLs = []string{wsURL}
 	cfg.API.Port = 0
-	cfg.Socket.Port = 0
 	ta, err := NewAgent(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -281,7 +274,6 @@ func TestInvalidAgentName_GH2022(t *testing.T) {
 	cfg.AgentName = "Test Agent"
 	cfg.BackendURLs = []string{wsURL}
 	cfg.API.Port = 0
-	cfg.Socket.Port = 0
 	ta, err := NewAgent(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -346,7 +338,6 @@ func TestConnectionManager(t *testing.T) {
 	defer cleanup()
 	cfg.BackendURLs = []string{wsURL}
 	cfg.API.Port = 0
-	cfg.Socket.Port = 0
 	ta, err := NewAgent(cfg)
 	if err != nil {
 		t.Fatal(err)

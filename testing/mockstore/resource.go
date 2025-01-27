@@ -3,7 +3,7 @@ package mockstore
 import (
 	"context"
 
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	corev2 "github.com/sensu/core/v2"
 	"github.com/sensu/sensu-go/backend/store"
 	"github.com/sensu/sensu-go/backend/store/patch"
 )
@@ -39,7 +39,7 @@ func (s *MockStore) ListResources(ctx context.Context, kind string, list interfa
 }
 
 // PatchResource ...
-func (s *MockStore) PatchResource(ctx context.Context, resource corev2.Resource, name string, patcher patch.Patcher, condition *store.ETagCondition) error {
-	args := s.Called(ctx, resource, name, patcher, condition)
+func (s *MockStore) PatchResource(ctx context.Context, resource corev2.Resource, name string, patcher patch.Patcher) error {
+	args := s.Called(ctx, resource, name, patcher)
 	return args.Error(0)
 }

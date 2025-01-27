@@ -38,6 +38,11 @@ const (
 	// allows eventd to process keepalives at a higher priority than
 	// regular events.
 	TopicKeepaliveRaw = "sensu:keepalive-raw"
+
+	// TopicAgentConnectionState is a topic that provides updates about agent
+	// connectedness. agentd will send notifications about agents that connect
+	// and disconnect on this channel.
+	TopicAgentConnectionState = "sensu:agent-conn"
 )
 
 var (
@@ -108,4 +113,10 @@ func EntityConfigTopic(namespace, name string) string {
 // subscription based on the namespace
 func SubscriptionTopic(namespace, sub string) string {
 	return fmt.Sprintf("%s:%s:%s", TopicSubscriptions, namespace, sub)
+}
+
+// BurialTopic is used to signal to agentd sessions that a keepalive burial
+// has been processed.
+func BurialTopic(namespace, entity string) string {
+	return fmt.Sprintf("sensu:burial:%s:%s", namespace, entity)
 }

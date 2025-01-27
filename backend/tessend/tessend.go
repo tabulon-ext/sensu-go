@@ -15,17 +15,23 @@ import (
 
 	"github.com/google/uuid"
 	dto "github.com/prometheus/client_model/go"
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	"github.com/sirupsen/logrus"
+
+	corev2 "github.com/sensu/core/v2"
+	corev3 "github.com/sensu/core/v3"
 	"github.com/sensu/sensu-go/backend/eventd"
+	"github.com/sensu/sensu-go/backend/licensing"
 	"github.com/sensu/sensu-go/backend/messaging"
 	"github.com/sensu/sensu-go/backend/ringv2"
 	"github.com/sensu/sensu-go/backend/store"
-	"github.com/sensu/sensu-go/backend/store/etcd"
 	"github.com/sensu/sensu-go/backend/store/provider"
+	storev2 "github.com/sensu/sensu-go/backend/store/v2"
 	"github.com/sensu/sensu-go/version"
-	"github.com/sirupsen/logrus"
-	"go.etcd.io/etcd/client/v3"
 )
+
+var logger = logrus.WithFields(logrus.Fields{
+	"component": "tessend",
+})
 
 const (
 	// componentName identifies Tessend as the component/daemon implemented in this
@@ -53,41 +59,66 @@ const (
 )
 
 var (
-	// resourceMetrics maps the metric name to the etcd function
-	// responsible for retrieving the resources store path.
-	resourceMetrics = map[string]func(context.Context, string) string{
-		"asset_count":                etcd.GetAssetsPath,
-		"check_count":                etcd.GetCheckConfigsPath,
-		"cluster_role_count":         etcd.GetClusterRolesPath,
-		"cluster_role_binding_count": etcd.GetClusterRoleBindingsPath,
-		"entity_count":               etcd.GetEntityConfigsPath,
-		"event_count":                etcd.GetEventsPath,
-		"filter_count":               etcd.GetEventFiltersPath,
-		"handler_count":              etcd.GetHandlersPath,
-		"hook_count":                 etcd.GetHookConfigsPath,
-		"mutator_count":              etcd.GetMutatorsPath,
-		"namespace_count":            etcd.GetNamespacesPath,
-		"role_count":                 etcd.GetRolesPath,
-		"role_binding_count":         etcd.GetRoleBindingsPath,
-		"silenced_count":             etcd.GetSilencedPath,
-		"user_count":                 etcd.GetUsersPath,
+	// configStoreResourceMetrics maps metric names to resources in the config
+	// store.
+	configStoreResourceMetrics = map[string]corev2.Resource{
+		"asset_count":                &corev2.Asset{},
+		"check_count":                &corev2.CheckConfig{},
+		"cluster_role_count":         &corev2.ClusterRole{},
+		"cluster_role_binding_count": &corev2.ClusterRoleBinding{},
+		"filter_count":               &corev2.EventFilter{},
+		"handler_count":              &corev2.Handler{},
+		"hook_count":                 &corev2.HookConfig{},
+		"mutator_count":              &corev2.Mutator{},
+		"role_count":                 &corev2.Role{},
+		"role_binding_count":         &corev2.RoleBinding{},
+		"user_count":                 &corev2.User{},
 	}
-	resourceMetricsMu = &sync.RWMutex{}
+	configStoreResourceMetricsMu = &sync.RWMutex{}
+
+	// entityConfigStoreResourceMetrics maps metric names to resources in the event
+	// store.
+	entityConfigStoreResourceMetrics = map[string]corev3.Resource{
+		"entity_count": &corev2.Entity{},
+	}
+	entityConfigStoreResourceMetricsMu = &sync.RWMutex{}
+
+	// eventStoreResourceMetrics maps metric names to resources in the event
+	// store.
+	eventStoreResourceMetrics = map[string]corev3.Resource{
+		"event_count": &corev2.Event{},
+	}
+	eventStoreResourceMetricsMu = &sync.RWMutex{}
+
+	// namespaceStoreResourceMetrics maps metric names to resources in the
+	// namespace store.
+	namespaceStoreResourceMetrics = map[string]corev3.Resource{
+		"namespace_count": &corev3.Namespace{},
+	}
+	namespaceStoreResourceMetricsMu = &sync.RWMutex{}
+
+	// silencesStoreResourceMetrics maps metric names to resources in the
+	// silences store.
+	silencesStoreResourceMetrics = map[string]corev3.Resource{
+		"silenced_count": &corev2.Silenced{},
+	}
+	silencesStoreResourceMetricsMu = &sync.RWMutex{}
 )
 
 // Tessend is the tessen daemon.
 type Tessend struct {
+	mutex             *sync.Mutex
 	interval          uint32
-	store             store.Store
+	store             storev2.Interface
 	eventStore        store.EventStore
 	ctx               context.Context
 	cancel            context.CancelFunc
 	errChan           chan error
 	ringPool          *ringv2.RingPool
 	interrupt         chan *corev2.TessenConfig
-	client            *clientv3.Client
 	url               string
 	backendID         string
+	clusterID         string
 	bus               messaging.MessageBus
 	messageChan       chan interface{}
 	subscription      []messaging.Subscription
@@ -95,6 +126,8 @@ type Tessend struct {
 	AllowOptOut       bool
 	config            *corev2.TessenConfig
 	EntityClassCounts func() map[string]int
+	licenseGetter     licensing.Getter
+	opcQueryer        store.OperatorQueryer
 }
 
 // Option is a functional option.
@@ -102,27 +135,31 @@ type Option func(*Tessend) error
 
 // Config configures Tessend.
 type Config struct {
-	Store      store.Store
+	Store      storev2.Interface
 	EventStore store.EventStore
 	RingPool   *ringv2.RingPool
-	Client     *clientv3.Client
 	Bus        messaging.MessageBus
+	ClusterID  string
+	OPCQueryer store.OperatorQueryer
 }
 
 // New creates a new TessenD.
 func New(ctx context.Context, c Config, opts ...Option) (*Tessend, error) {
 	t := &Tessend{
-		interval:    corev2.DefaultTessenInterval,
-		store:       c.Store,
-		eventStore:  c.EventStore,
-		client:      c.Client,
-		errChan:     make(chan error, 1),
-		url:         tessenURL,
-		backendID:   uuid.New().String(),
-		bus:         c.Bus,
-		messageChan: make(chan interface{}, 1),
-		duration:    perResourceDuration,
-		AllowOptOut: true,
+		mutex:         &sync.Mutex{},
+		store:         c.Store,
+		interval:      corev2.DefaultTessenInterval,
+		eventStore:    c.EventStore,
+		errChan:       make(chan error, 1),
+		url:           tessenURL,
+		backendID:     uuid.New().String(),
+		clusterID:     c.ClusterID,
+		bus:           c.Bus,
+		messageChan:   make(chan interface{}, 1),
+		duration:      perResourceDuration,
+		AllowOptOut:   true,
+		licenseGetter: &licensing.DummyGetter{},
+		opcQueryer:    c.OPCQueryer,
 	}
 	t.ctx, t.cancel = context.WithCancel(ctx)
 	t.interrupt = make(chan *corev2.TessenConfig, 1)
@@ -137,8 +174,8 @@ func New(ctx context.Context, c Config, opts ...Option) (*Tessend, error) {
 // GetStoreConfig gets information about how the cluster stores information.
 func (t *Tessend) GetStoreConfig() StoreConfig {
 	return StoreConfig{
-		ConfigStore: "etcd",
-		StateStore:  "etcd",
+		ConfigStore: "postgres",
+		StateStore:  "postgres",
 		EventStore:  t.getEventStore(),
 	}
 }
@@ -148,22 +185,32 @@ func (t *Tessend) getEventStore() string {
 		info := p.GetProviderInfo()
 		return info.Type
 	}
-	return "etcd"
+	return "postgres"
 }
 
 // Start the Tessen daemon.
 func (t *Tessend) Start() error {
-	tessen, err := t.store.GetTessenConfig(t.ctx)
+	req := storev2.NewResourceRequestFromV2Resource(&corev2.TessenConfig{})
+	var tessen corev2.TessenConfig
+	tessenWrapper, err := t.store.GetConfigStore().Get(t.ctx, req)
 	// create the default tessen config if one does not already exist
-	if err != nil || tessen == nil {
-		tessen = corev2.DefaultTessenConfig()
-		err = t.store.CreateOrUpdateTessenConfig(t.ctx, tessen)
+	if err != nil {
+		tessen = *corev2.DefaultTessenConfig()
+		var wErr error
+		tessenWrapper, wErr = storev2.WrapResource(&tessen)
+		if wErr != nil {
+			return fmt.Errorf("failed to wrap DefaultTessenConfig: %v", wErr)
+		}
+		err = t.store.GetConfigStore().CreateOrUpdate(t.ctx, req, tessenWrapper)
 		if err != nil {
 			// log the error and continue with the default config
 			logger.WithError(err).Error("unable to update tessen store")
 		}
 	}
-	t.config = tessen
+	if err := tessenWrapper.UnwrapInto(&tessen); err != nil {
+		logger.WithError(err).Error("could not unwrap tessen resource")
+	}
+	t.config = &tessen
 
 	if err := t.ctx.Err(); err != nil {
 		return err
@@ -191,13 +238,20 @@ func (t *Tessend) Stop() error {
 	defer func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+
 		key := ringv2.Path("global", "backends")
 		ring := t.ringPool.Get(key)
-		if err := ring.Remove(ctx, t.backendID); err != nil {
-			logger.WithField("key", t.backendID).WithError(err).Error("error removing key from the ring")
+		if ring != nil {
+			ctx = ringv2.DeleteEntityContext(ctx)
+			if err := ring.Remove(ctx, t.backendID); err != nil {
+				logger.WithField("key", t.backendID).WithError(err).Error("error removing key from the ring")
+			} else {
+				logger.WithField("key", t.backendID).Debug("removed a key from the ring")
+			}
 		} else {
-			logger.WithField("key", t.backendID).Debug("removed a key from the ring")
+			logger.WithField("function", "watchRing").WithField("key", key).Error("ring pool returned a nil ring for the given key")
 		}
+
 		for _, sub := range t.subscription {
 			if err := sub.Cancel(); err != nil {
 				logger.WithError(err).Error("unable to unsubscribe from message bus")
@@ -207,6 +261,14 @@ func (t *Tessend) Stop() error {
 	t.cancel()
 	close(t.messageChan)
 	return nil
+}
+
+// SetLicenseGetter makes this instance of Tessend use a new licensing.Getter to
+// retrieve license information.
+func (t *Tessend) SetLicenseGetter(getter licensing.Getter) {
+	defer t.mutex.Unlock()
+	t.mutex.Lock()
+	t.licenseGetter = getter
 }
 
 // Err returns a channel on which to listen for terminal errors.
@@ -299,16 +361,18 @@ func (t *Tessend) startMessageHandler() {
 
 // startWatcher watches the TessenConfig store for changes to the opt-out configuration.
 func (t *Tessend) startWatcher() {
-	watchChan := t.store.GetTessenConfigWatcher(t.ctx)
+	req := storev2.NewResourceRequestFromV2Resource(&corev2.TessenConfig{})
+	watchChan := t.store.GetConfigStore().Watch(t.ctx, req)
 	for {
 		select {
 		case watchEvent, ok := <-watchChan:
 			if !ok {
 				// The watchChan has closed. Restart the watcher.
-				watchChan = t.store.GetTessenConfigWatcher(t.ctx)
+				logger.Info("restarting tessend watcher")
+				watchChan = t.store.GetConfigStore().Watch(t.ctx, req)
 				continue
 			}
-			t.handleWatchEvent(watchEvent)
+			t.handleWatchEvents(watchEvent)
 		case <-t.ctx.Done():
 			return
 		}
@@ -316,23 +380,35 @@ func (t *Tessend) startWatcher() {
 }
 
 // handleWatchEvent issues an interrupt if a change to the stored TessenConfig has been detected.
-func (t *Tessend) handleWatchEvent(watchEvent store.WatchEventTessenConfig) {
-	tessen := watchEvent.TessenConfig
-
-	if tessen == nil {
-		logger.Error("nil config received from tessen config watcher")
+func (t *Tessend) handleWatchEvents(watchEvents []storev2.WatchEvent) {
+	if len(watchEvents) == 0 {
 		return
 	}
 
-	switch watchEvent.Action {
-	case store.WatchCreate:
+	// tessend should be receiving watch events about a single resource, so batched change events
+	// are unlikely to occur. If they do, we likely only want to update our state to reflect the most recent
+	// state of the resource.
+	if len(watchEvents) > 1 {
+		logger.Warnf("tessend received suspect batch containing %d watch events. Only handling last event.", len(watchEvents))
+	}
+	watchEvent := watchEvents[len(watchEvents)-1]
+	tessen := &corev2.TessenConfig{}
+	if watchEvent.Err != nil {
+		logger.WithError(watchEvent.Err).Warn("tessend recieved event with error status")
+		return
+	}
+	if err := watchEvent.Value.UnwrapInto(tessen); err != nil {
+		logger.WithError(watchEvent.Err).Warn("tessend recieved event not containing tessen config")
+		return
+	}
+	switch watchEvent.Type {
+	case storev2.WatchCreate:
 		logger.WithField("opt-out", tessen.OptOut).Debug("tessen configuration created")
-	case store.WatchUpdate:
+	case storev2.WatchUpdate:
 		logger.WithField("opt-out", tessen.OptOut).Debug("tessen configuration updated")
-	case store.WatchDelete:
+	case storev2.WatchDelete:
 		logger.WithField("opt-out", tessen.OptOut).Debug("tessen configuration deleted")
 	}
-
 	t.config = tessen
 	t.interrupt <- t.config
 }
@@ -356,10 +432,14 @@ func (t *Tessend) startRingUpdates() {
 func (t *Tessend) updateRing() {
 	key := ringv2.Path("global", "backends")
 	ring := t.ringPool.Get(key)
-	if err := ring.Add(t.ctx, t.backendID, ringBackendKeepalive); err != nil {
-		logger.WithField("key", t.backendID).WithError(err).Error("error adding key to the ring")
+	if ring != nil {
+		if err := ring.Add(t.ctx, t.backendID, ringBackendKeepalive); err != nil {
+			logger.WithField("key", t.backendID).WithError(err).Error("error adding key to the ring")
+		} else {
+			logger.WithField("key", t.backendID).Debug("added a key to the ring")
+		}
 	} else {
-		logger.WithField("key", t.backendID).Debug("added a key to the ring")
+		logger.WithField("function", "watchRing").WithField("key", key).Error("ring pool returned a nil ring for the given key")
 	}
 }
 
@@ -368,16 +448,20 @@ func (t *Tessend) updateRing() {
 func (t *Tessend) watchRing(ctx context.Context, tessen *corev2.TessenConfig, wg *sync.WaitGroup) {
 	key := ringv2.Path("global", "backends")
 	ring := t.ringPool.Get(key)
-	sub := ringv2.Subscription{
-		Name:             "tessen",
-		Items:            1,
-		IntervalSchedule: int(t.interval),
+	if ring != nil {
+		sub := ringv2.Subscription{
+			Name:             "tessen",
+			Items:            1,
+			IntervalSchedule: int(t.interval),
+		}
+		wc := ring.Subscribe(ctx, sub)
+		go func() {
+			t.handleEvents(ctx, tessen, wc)
+			defer wg.Done()
+		}()
+	} else {
+		logger.WithField("function", "watchRing").WithField("key", key).Error("ring pool returned a nil ring for the given key")
 	}
-	wc := ring.Subscribe(ctx, sub)
-	go func() {
-		t.handleEvents(ctx, tessen, wc)
-		defer wg.Done()
-	}()
 }
 
 // handleEvents logs different ring events and triggers tessen to run if applicable.
@@ -436,7 +520,7 @@ func (t *Tessend) sendPromMetrics() {
 	data := t.getDataPayload()
 	now := time.Now().Unix()
 
-	var value float64
+	var eventsProcessed float64
 	{
 		c := eventd.EventsProcessed.WithLabelValues(eventd.EventsProcessedLabelSuccess, eventd.EventsProcessedTypeLabelCheck)
 		pb := &dto.Metric{}
@@ -444,7 +528,7 @@ func (t *Tessend) sendPromMetrics() {
 			logger.WithError(err).Warn("failed to retrieve prometheus event counter")
 			return
 		}
-		value = value + pb.GetCounter().GetValue()
+		eventsProcessed = eventsProcessed + pb.GetCounter().GetValue()
 	}
 	{
 		c := eventd.EventsProcessed.WithLabelValues(eventd.EventsProcessedLabelSuccess, eventd.EventsProcessedTypeLabelMetrics)
@@ -453,7 +537,17 @@ func (t *Tessend) sendPromMetrics() {
 			logger.WithError(err).Warn("failed to retrieve prometheus event counter")
 			return
 		}
-		value = value + pb.GetCounter().GetValue()
+		eventsProcessed = eventsProcessed + pb.GetCounter().GetValue()
+	}
+
+	var metricPointsProcessed float64
+	{
+		c := eventd.MetricPointsProcessed
+		pb := &dto.Metric{}
+		if err := c.Write(pb); err != nil {
+			return
+		}
+		metricPointsProcessed = pb.GetCounter().GetValue()
 	}
 
 	// get the backend hostname to use as a metric tag
@@ -463,21 +557,31 @@ func (t *Tessend) sendPromMetrics() {
 	}
 
 	// populate data payload
-	mp := &corev2.MetricPoint{
-		Name:      eventd.EventsProcessedCounterVec,
-		Value:     value,
-		Timestamp: now,
-		Tags: []*corev2.MetricTag{
-			{
-				Name:  "hostname",
-				Value: hostname,
+	mps := []*corev2.MetricPoint{
+		{
+			Name:      eventd.EventsProcessedCounterVec,
+			Value:     eventsProcessed,
+			Timestamp: now,
+			Tags: []*corev2.MetricTag{
+				{Name: "hostname", Value: hostname},
+			},
+		},
+		{
+			Name:      eventd.EventMetricPointsProcessedCounter,
+			Value:     metricPointsProcessed,
+			Timestamp: now,
+			Tags: []*corev2.MetricTag{
+				{Name: "hostname", Value: hostname},
 			},
 		},
 	}
-	appendInternalTag(mp)
-	appendStoreConfig(mp, t.GetStoreConfig())
-	logMetric(mp)
-	data.Metrics.Points = append(data.Metrics.Points, mp)
+
+	for _, mp := range mps {
+		appendInternalTag(mp)
+		appendStoreConfig(mp, t.GetStoreConfig())
+		logMetric(mp)
+	}
+	data.Metrics.Points = append(data.Metrics.Points, mps...)
 
 	logger.WithFields(logrus.Fields{
 		"url": t.url,
@@ -579,87 +683,166 @@ func (t *Tessend) collectAndSend() {
 // getDataPayload retrieves cluster, version, and license information
 // and returns the populated data payload.
 func (t *Tessend) getDataPayload() *Data {
-	// collect cluster id
-	clusterID, err := t.store.GetClusterID(t.ctx)
-	if err != nil {
-		logger.WithError(err).Error("unable to retrieve cluster id")
-	}
-
 	// collect license information
-	wrapper := &Wrapper{}
-	err = etcd.Get(t.ctx, t.client, licenseStorePath, wrapper)
-	if err != nil {
-		logger.WithError(err).Debug("unable to retrieve license")
-	}
 
 	// populate data payload
 	data := &Data{
 		Cluster: Cluster{
-			ID:           clusterID,
+			ID:           t.clusterID,
 			Distribution: Distribution,
 			Version:      version.Semver(),
-			License:      wrapper.Value.License,
+			License:      t.licenseGetter.Get(),
 		},
 	}
 
 	return data
 }
 
+func (t *Tessend) getClusterBackendsCount() (int, error) {
+	backendStates, err := t.opcQueryer.ListOperators(t.ctx, store.OperatorKey{
+		Type: store.BackendOperator,
+	})
+	if err != nil {
+		return 0, err
+	}
+	return len(backendStates), nil
+}
+
+func (t *Tessend) prepareMetricPoint(name string, value float64, timestamp int64) *corev2.MetricPoint {
+	point := &corev2.MetricPoint{
+		Name:      name,
+		Value:     value,
+		Timestamp: timestamp,
+	}
+	appendInternalTag(point)
+	appendStoreConfig(point, t.GetStoreConfig())
+	logMetric(point)
+
+	return point
+}
+
 // getPerResourceMetrics populates the data payload with the total number of each resource.
 func (t *Tessend) getPerResourceMetrics(now int64, data *Data) error {
-	var backendCount float64
-
 	// collect backend count
-	cluster, err := t.client.Cluster.MemberList(t.ctx)
+	backendCount, err := t.getClusterBackendsCount()
 	if err != nil {
 		logger.WithError(err).Error("unable to retrieve backend count")
 		return err
 	}
-	if cluster != nil {
-		backendCount = float64(len(cluster.Members))
-	}
 
-	// populate data payload
-	mp := &corev2.MetricPoint{
-		Name:      "backend_count",
-		Value:     backendCount,
-		Timestamp: now,
-	}
-	appendInternalTag(mp)
-	appendStoreConfig(mp, t.GetStoreConfig())
-	logMetric(mp)
+	mp := t.prepareMetricPoint("backend_count", float64(backendCount), now)
 	data.Metrics.Points = append(data.Metrics.Points, mp)
 
 	// loop through the entity class counts
 	data.Metrics.Points = append(data.Metrics.Points, t.getEntityClassMetrics(now)...)
 
 	// loop through the resource map and collect the count of each
-	// resource every 5 seconds to distribute the load on etcd
-	resourceMetricsMu.RLock()
-	defer resourceMetricsMu.RUnlock()
+	// resource at the configured interval
 	ticker := time.NewTicker(t.duration)
 	defer ticker.Stop()
-	for metricName, metricFunc := range resourceMetrics {
+
+	configStoreResourceMetricsMu.RLock()
+	defer configStoreResourceMetricsMu.RUnlock()
+	for metricName, resource := range configStoreResourceMetrics {
 		select {
 		case <-t.ctx.Done():
 			return t.ctx.Err()
 		case <-ticker.C:
 		}
-		count, err := etcd.Count(t.ctx, t.client, metricFunc(t.ctx, ""))
+		count, err := t.store.GetConfigStore().Count(t.ctx, storev2.NewResourceRequestFromV2Resource(resource))
 		if err != nil {
 			return err
 		}
 
-		mp = &corev2.MetricPoint{
-			Name:      metricName,
-			Value:     float64(count),
-			Timestamp: now,
-		}
-		appendInternalTag(mp)
-		appendStoreConfig(mp, t.GetStoreConfig())
-		logMetric(mp)
+		mp := t.prepareMetricPoint(metricName, float64(count), now)
 		data.Metrics.Points = append(data.Metrics.Points, mp)
 	}
+
+	entityConfigStoreResourceMetricsMu.RLock()
+	defer entityConfigStoreResourceMetricsMu.RUnlock()
+	namespaces, err := t.store.GetNamespaceStore().List(t.ctx, &store.SelectionPredicate{})
+	if err != nil {
+		return err
+	}
+
+	for _, namespace := range namespaces {
+		var metricName = ""
+		var totalEntities = 0
+
+		for metricName = range entityConfigStoreResourceMetrics {
+			select {
+			case <-t.ctx.Done():
+				return t.ctx.Err()
+			case <-ticker.C:
+			}
+
+			count, err := t.store.GetEntityConfigStore().Count(t.ctx, namespace.Metadata.Name, "")
+			if err != nil {
+				return err
+			}
+			totalEntities += count
+		}
+
+		mp := t.prepareMetricPoint(metricName, float64(totalEntities), now)
+		data.Metrics.Points = append(data.Metrics.Points, mp)
+	}
+
+	eventStoreResourceMetricsMu.RLock()
+	defer eventStoreResourceMetricsMu.RUnlock()
+	for metricName := range eventStoreResourceMetrics {
+		select {
+		case <-t.ctx.Done():
+			return t.ctx.Err()
+		case <-ticker.C:
+		}
+
+		ctx := context.WithValue(t.ctx, corev2.NamespaceKey, corev2.NamespaceTypeAll)
+		count, err := t.store.GetEventStore().CountEvents(ctx, &store.SelectionPredicate{})
+		if err != nil {
+			return err
+		}
+
+		mp := t.prepareMetricPoint(metricName, float64(count), now)
+		data.Metrics.Points = append(data.Metrics.Points, mp)
+	}
+
+	namespaceStoreResourceMetricsMu.RLock()
+	defer namespaceStoreResourceMetricsMu.RUnlock()
+	for metricName := range namespaceStoreResourceMetrics {
+		select {
+		case <-t.ctx.Done():
+			return t.ctx.Err()
+		case <-ticker.C:
+		}
+
+		count, err := t.store.GetNamespaceStore().Count(t.ctx)
+		if err != nil {
+			return err
+		}
+
+		mp := t.prepareMetricPoint(metricName, float64(count), now)
+		data.Metrics.Points = append(data.Metrics.Points, mp)
+	}
+
+	silencesStoreResourceMetricsMu.RLock()
+	defer silencesStoreResourceMetricsMu.RUnlock()
+	for metricName := range silencesStoreResourceMetrics {
+		select {
+		case <-t.ctx.Done():
+			return t.ctx.Err()
+		case <-ticker.C:
+		}
+
+		silences, err := t.store.GetSilencesStore().GetSilences(t.ctx, "")
+		if err != nil {
+			return err
+		}
+		count := len(silences)
+
+		mp := t.prepareMetricPoint(metricName, float64(count), now)
+		data.Metrics.Points = append(data.Metrics.Points, mp)
+	}
+
 	return nil
 }
 
@@ -670,7 +853,7 @@ func (t *Tessend) getTessenConfigMetrics(now int64, tessen *corev2.TessenConfig,
 		Value:     1,
 		Timestamp: now,
 		Tags: []*corev2.MetricTag{
-			&corev2.MetricTag{
+			{
 				Name:  "opt_out",
 				Value: strconv.FormatBool(tessen.OptOut),
 			},
@@ -735,12 +918,11 @@ func appendInternalTag(m *corev2.MetricPoint) {
 	}
 }
 
-// RegisterResourceMetric adds a resource metric to resourceMetrics with its
-// etcd function
-func RegisterResourceMetric(key string, metricFunc func(context.Context, string) string) {
-	resourceMetricsMu.Lock()
-	defer resourceMetricsMu.Unlock()
-	resourceMetrics[key] = metricFunc
+// RegisterResourceMetric adds a resource metric to be reported by Tessen.
+func RegisterResourceMetric(key string, resource corev2.Resource) {
+	configStoreResourceMetricsMu.Lock()
+	defer configStoreResourceMetricsMu.Unlock()
+	configStoreResourceMetrics[key] = resource
 }
 
 func appendStoreConfig(m *corev2.MetricPoint, c StoreConfig) {

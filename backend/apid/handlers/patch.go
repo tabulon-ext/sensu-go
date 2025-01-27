@@ -3,22 +3,19 @@ package handlers
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io/ioutil"
 	"net/http"
 	"net/url"
-	"reflect"
 	"strings"
 
 	"github.com/gorilla/mux"
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
-	corev3 "github.com/sensu/sensu-go/api/core/v3"
+	corev2 "github.com/sensu/core/v2"
+	corev3 "github.com/sensu/core/v3"
 	"github.com/sensu/sensu-go/backend/apid/actions"
 	"github.com/sensu/sensu-go/backend/store"
 	"github.com/sensu/sensu-go/backend/store/patch"
 	storev2 "github.com/sensu/sensu-go/backend/store/v2"
-	"github.com/sensu/sensu-go/backend/store/v2/wrap"
 )
 
 const (
@@ -33,11 +30,13 @@ const (
 var acceptedContentTypes = []string{mergePatchContentType}
 
 // PatchResource patches a given resource, using the request body as the patch
-func (h Handlers) PatchResource(r *http.Request) (interface{}, error) {
+func (h Handlers[R, T]) PatchResource(r *http.Request) (HandlerResponse, error) {
+	var response HandlerResponse
+
 	// Read the request body
 	body, err := ioutil.ReadAll(r.Body)
 	if err != nil {
-		return nil, actions.NewError(
+		return response, actions.NewError(
 			actions.InvalidArgument,
 			fmt.Errorf("could not read the request body: %s", err),
 		)
@@ -51,59 +50,61 @@ func (h Handlers) PatchResource(r *http.Request) (interface{}, error) {
 	case mergePatchContentType, "": // Use merge patch as fallback value
 		patcher = &patch.Merge{MergePatch: body}
 	case jsonPatchContentType:
-		return nil, actions.NewError(
+		return response, actions.NewError(
 			actions.InvalidArgument,
 			fmt.Errorf("JSON Patch is not supported yet. Allowed values: %s", strings.Join(acceptedContentTypes, ", ")),
 		)
 	default:
-		return nil, actions.NewError(
+		return response, actions.NewError(
 			actions.InvalidArgument,
 			fmt.Errorf("invalid Content-Type header: %s.  Allowed values: %s", contentType, strings.Join(acceptedContentTypes, ", ")),
 		)
 	}
 
+	ctx := r.Context()
+
 	// Determine if we have a conditional request
-	conditions := &store.ETagCondition{
-		IfMatch:     r.Header.Get(ifMatchHeader),
-		IfNoneMatch: r.Header.Get(ifNoneMatchHeader),
+	if value := r.Header.Get(ifMatchHeader); value != "" {
+		ifMatch, err := storev2.ReadIfMatch(value)
+		if err != nil {
+			return response, actions.NewError(actions.InvalidArgument, fmt.Errorf("invalid If-Match header: %s", err))
+		}
+		ctx = storev2.ContextWithIfMatch(ctx, ifMatch)
+	}
+	if value := r.Header.Get(ifNoneMatchHeader); value != "" {
+		ifNoneMatch, err := storev2.ReadIfNoneMatch(value)
+		if err != nil {
+			return response, actions.NewError(actions.InvalidArgument, fmt.Errorf("invalid If-None-Match header: %s", err))
+		}
+		ctx = storev2.ContextWithIfNoneMatch(ctx, ifNoneMatch)
 	}
 
 	// Retrieve the name & namespace of the resource via the route variables
 	params := mux.Vars(r)
 	name, err := url.PathUnescape(params["id"])
 	if err != nil {
-		return nil, err
+		return response, err
 	}
 	namespace, err := url.PathUnescape(params["namespace"])
 	if err != nil {
-		return nil, err
+		return response, err
 	}
 
 	// Validate that the patch does not alter the namespace nor the name
 	if err := validatePatch(body, params); err != nil {
-		return nil, actions.NewError(actions.InvalidArgument, err)
+		return response, actions.NewError(actions.InvalidArgument, err)
 	}
 
-	if h.Resource != nil {
-		return h.patchV2Resource(r.Context(), body, name, patcher, conditions)
-	} else if h.V3Resource != nil {
-		return h.patchV3Resource(r.Context(), body, name, namespace, patcher, conditions)
-	}
-
-	return nil, actions.NewError(actions.InvalidArgument, errors.New("no resource available"))
+	resource, err := h.patchV3Resource(ctx, name, namespace, patcher)
+	response.Resource = resource
+	return response, err
 }
 
-func (h Handlers) patchV2Resource(ctx context.Context, body []byte, name string, patcher patch.Patcher, conditions *store.ETagCondition) (interface{}, error) {
-	payload := reflect.New(reflect.TypeOf(h.Resource).Elem())
-	if err := json.Unmarshal(body, payload.Interface()); err != nil {
-		return nil, actions.NewError(actions.InvalidArgument, err)
-	}
-	resource, ok := payload.Interface().(corev2.Resource)
-	if !ok {
-		return nil, actions.NewErrorf(actions.InvalidArgument)
-	}
+func (h Handlers[R, T]) patchV3Resource(ctx context.Context, name, namespace string, patcher patch.Patcher) (corev3.Resource, error) {
+	gstore := storev2.Of[R](h.Store)
 
-	if err := h.Store.PatchResource(ctx, resource, name, patcher, conditions); err != nil {
+	id := storev2.ID{Namespace: namespace, Name: name}
+	if err := gstore.Patch(ctx, id, patcher); err != nil {
 		switch err := err.(type) {
 		case *store.ErrNotFound:
 			return nil, actions.NewError(actions.NotFound, err)
@@ -116,45 +117,7 @@ func (h Handlers) patchV2Resource(ctx context.Context, body []byte, name string,
 		}
 	}
 
-	return resource, nil
-}
-
-func (h Handlers) patchV3Resource(ctx context.Context, body []byte, name, namespace string, patcher patch.Patcher, conditions *store.ETagCondition) (interface{}, error) {
-	payload := reflect.New(reflect.TypeOf(h.V3Resource).Elem())
-	if err := json.Unmarshal(body, payload.Interface()); err != nil {
-		return nil, actions.NewError(actions.InvalidArgument, err)
-	}
-	resource, ok := payload.Interface().(corev3.Resource)
-	if !ok {
-		return nil, actions.NewErrorf(actions.InvalidArgument)
-	}
-
-	req := storev2.NewResourceRequest(ctx, namespace, name, resource.StoreName())
-	w, err := wrap.ResourceWithoutValidation(resource)
-	if err != nil {
-		return nil, actions.NewError(actions.InvalidArgument, err)
-	}
-
-	if err := h.StoreV2.Patch(req, w, patcher, conditions); err != nil {
-		switch err := err.(type) {
-		case *store.ErrNotFound:
-			return nil, actions.NewError(actions.NotFound, err)
-		case *store.ErrNotValid:
-			return nil, actions.NewError(actions.InvalidArgument, err)
-		case *store.ErrPreconditionFailed:
-			return nil, actions.NewError(actions.PreconditionFailed, err)
-		default:
-			return nil, actions.NewError(actions.InternalErr, err)
-		}
-	}
-
-	// Unwrap the updated resource
-	resource, err = w.Unwrap()
-	if err != nil {
-		return nil, actions.NewError(actions.InternalErr, err)
-	}
-
-	return resource, nil
+	return nil, nil
 }
 
 func validatePatch(data []byte, vars map[string]string) error {

@@ -1,3 +1,4 @@
+//go:build arm
 // +build arm
 
 package system
@@ -5,8 +6,8 @@ package system
 import _ "unsafe"
 
 //go:linkname goarm runtime.goarm
-var goarm int32
+var goarm uint8
 
 func getARMVersion() int32 {
-	return goarm
+	return int32(goarm)
 }

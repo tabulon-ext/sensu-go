@@ -9,15 +9,17 @@ import (
 	"net"
 	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	corev2 "github.com/sensu/core/v2"
 	"github.com/sensu/sensu-go/asset"
 	"github.com/sensu/sensu-go/backend/licensing"
 	"github.com/sensu/sensu-go/backend/secrets"
 	"github.com/sensu/sensu-go/backend/store"
+	storev2 "github.com/sensu/sensu-go/backend/store/v2"
 	"github.com/sensu/sensu-go/command"
 	"github.com/sensu/sensu-go/testing/mockassetgetter"
 	"github.com/sensu/sensu-go/testing/mockexecutor"
@@ -32,6 +34,21 @@ import (
 
 func init() {
 	logrus.SetOutput(ioutil.Discard)
+}
+
+func TestNilHandlerBug_GH4584(t *testing.T) {
+	// tests to make sure Handle() doesn't panic when the handler is not found.
+	mockStore := new(mockstore.V2MockStore)
+	cs := new(mockstore.ConfigStore)
+	mockStore.On("GetConfigStore").Return(cs)
+	cs.On("Get", mock.Anything, mock.Anything).Return(nil, &store.ErrNotFound{})
+	adapter := &LegacyAdapter{
+		Store: mockStore,
+	}
+	err := adapter.Handle(context.Background(), &corev2.ResourceReference{}, corev2.FixtureEvent("foo", "bar"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestHelperHandlerProcess(t *testing.T) {
@@ -64,7 +81,7 @@ func TestLegacyAdapter_CanHandle(t *testing.T) {
 		Executor               command.Executor
 		LicenseGetter          licensing.Getter
 		SecretsProviderManager *secrets.ProviderManager
-		Store                  store.Store
+		Store                  storev2.Interface
 		StoreTimeout           time.Duration
 	}
 	type args struct {
@@ -120,7 +137,7 @@ func TestLegacyAdapter_Handle(t *testing.T) {
 		Executor               command.Executor
 		LicenseGetter          licensing.Getter
 		SecretsProviderManager secrets.ProviderManagerer
-		Store                  store.Store
+		Store                  storev2.Interface
 		StoreTimeout           time.Duration
 	}
 	type args struct {
@@ -149,11 +166,13 @@ func TestLegacyAdapter_Handle(t *testing.T) {
 				}(),
 			},
 			fields: fields{
-				Store: func() store.Store {
+				Store: func() storev2.Interface {
 					var handler *corev2.Handler
 					err := errors.New("not found")
-					stor := &mockstore.MockStore{}
-					stor.On("GetHandlerByName", mock.Anything, "handler1").Return(handler, err)
+					stor := &mockstore.V2MockStore{}
+					cs := new(mockstore.ConfigStore)
+					stor.On("GetConfigStore").Return(cs)
+					cs.On("Get", mock.Anything, mock.Anything).Return(mockstore.Wrapper[*corev2.Handler]{Value: handler}, err)
 					return stor
 				}(),
 			},
@@ -179,10 +198,12 @@ func TestLegacyAdapter_Handle(t *testing.T) {
 					manager.On("SubSecrets", mock.Anything, mock.Anything).Return(secrets, errors.New("secrets error"))
 					return manager
 				}(),
-				Store: func() store.Store {
+				Store: func() storev2.Interface {
 					handler := corev2.FixtureHandler("handler1")
-					stor := &mockstore.MockStore{}
-					stor.On("GetHandlerByName", mock.Anything, "handler1").Return(handler, nil)
+					stor := &mockstore.V2MockStore{}
+					cs := new(mockstore.ConfigStore)
+					stor.On("GetConfigStore").Return(cs)
+					cs.On("Get", mock.Anything, mock.Anything).Return(mockstore.Wrapper[*corev2.Handler]{Value: handler}, nil)
 					return stor
 				}(),
 			},
@@ -213,12 +234,13 @@ func TestLegacyAdapter_Handle(t *testing.T) {
 }
 
 func TestLegacyAdapter_pipeHandler(t *testing.T) {
+	t.Parallel()
 	type fields struct {
 		AssetGetter            asset.Getter
 		Executor               command.Executor
 		LicenseGetter          licensing.Getter
 		SecretsProviderManager secrets.ProviderManagerer
-		Store                  store.Store
+		Store                  storev2.Interface
 		StoreTimeout           time.Duration
 	}
 	type args struct {
@@ -372,11 +394,12 @@ func TestLegacyAdapter_pipeHandler(t *testing.T) {
 					})
 					return ex
 				}(),
-				Store: func() store.Store {
+				Store: func() storev2.Interface {
 					asset := corev2.FixtureAsset("asset1")
-					stor := &mockstore.MockStore{}
-					stor.On("GetAssetByName", mock.Anything, "asset1").
-						Return(asset, nil)
+					stor := &mockstore.V2MockStore{}
+					cs := new(mockstore.ConfigStore)
+					stor.On("GetConfigStore").Return(cs)
+					cs.On("Get", mock.Anything, mock.Anything).Return(mockstore.Wrapper[*corev2.Asset]{Value: asset}, nil)
 					return stor
 				}(),
 			},
@@ -419,36 +442,47 @@ func TestLegacyAdapter_pipeHandler(t *testing.T) {
 	}
 }
 
-func TestLegacyAdapter_socketHandlerTCP(t *testing.T) {
-	ready := make(chan struct{})
-	done := make(chan struct{})
+func newListener(t *testing.T, network string) (ln net.Listener, host string, portU32 uint32, closeListener func()) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
 
+	host, portS, err := net.SplitHostPort(listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(portS)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return listener, host, uint32(port), func() {
+		_ = listener.Close()
+	}
+}
+
+func TestLegacyAdapter_socketHandlerTCP(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	event := corev2.FixtureEvent("test", "test")
 	mutatedData, _ := json.Marshal(event)
+
+	listener, host, port, closeListener := newListener(t, "tcp")
+	defer closeListener()
+
 	handler := &corev2.Handler{
-		Type: "tcp",
+		Type: listener.Addr().Network(),
 		Socket: &corev2.HandlerSocket{
-			Host: "127.0.0.1",
-			Port: 5678,
+			Host: host,
+			Port: port,
 		},
 	}
 
 	l := &LegacyAdapter{}
 
+	done := make(chan struct{})
 	go func() {
-		listener, err := net.Listen("tcp", "127.0.0.1:5678")
-		assert.NoError(t, err)
-		if err != nil {
-			return
-		}
-
-		defer func() {
-			require.NoError(t, listener.Close())
-		}()
-
-		ready <- struct{}{}
-
 		conn, err := listener.Accept()
 		if err != nil {
 			return
@@ -463,58 +497,110 @@ func TestLegacyAdapter_socketHandlerTCP(t *testing.T) {
 		}
 
 		assert.Equal(t, mutatedData, buffer)
-		done <- struct{}{}
+		close(done)
 	}()
 
-	<-ready
-	_, err := l.socketHandler(ctx, handler, event, mutatedData)
+	if err := l.socketHandler(ctx, handler, event, mutatedData); err != nil {
+		t.Fatal(err)
+	}
 
-	assert.NoError(t, err)
+	<-done
+}
+
+func TestLegacyAdapter_GH4675(t *testing.T) {
+	t.Parallel()
+	done := make(chan struct{})
+
+	ctx := context.Background()
+	event := corev2.FixtureEvent("test", "test")
+	// put a lot of data in the event to make sure it's too big for tcp buffer
+	bigLongBytes := make([]byte, 10_000_000)
+	for i := range bigLongBytes {
+		bigLongBytes[i] = '!'
+	}
+	event.Check.Output = string(bigLongBytes)
+	mutatedData, _ := json.Marshal(event)
+
+	listener, host, port, closeListener := newListener(t, "tcp")
+	defer closeListener()
+
+	handler := &corev2.Handler{
+		Type: listener.Addr().Network(),
+		Socket: &corev2.HandlerSocket{
+			Host: host,
+			Port: port,
+		},
+		Timeout: 1,
+	}
+
+	l := &LegacyAdapter{}
+
+	go func() {
+		_, err := listener.Accept()
+		if err != nil {
+			panic(err)
+		}
+		closeListener()
+		close(done)
+	}()
+
+	if err := l.socketHandler(ctx, handler, event, mutatedData); err == nil {
+		t.Error("expected non-nil error")
+	}
 	<-done
 }
 
 func TestLegacyAdapter_socketHandlerUDP(t *testing.T) {
-	ready := make(chan struct{})
+	t.Parallel()
 	done := make(chan struct{})
 
 	ctx := context.Background()
 	event := corev2.FixtureEvent("test", "test")
 	mutatedData, _ := json.Marshal(event)
+
+	listener, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer func() {
+		if err := listener.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
+
+	host, portS, err := net.SplitHostPort(listener.LocalAddr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	port, err := strconv.Atoi(portS)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	handler := &corev2.Handler{
-		Type: "udp",
+		Type: listener.LocalAddr().Network(),
 		Socket: &corev2.HandlerSocket{
-			Host: "127.0.0.1",
-			Port: 5678,
+			Host: host,
+			Port: uint32(port),
 		},
 	}
 
 	l := &LegacyAdapter{}
 
 	go func() {
-		listener, err := net.ListenPacket("udp", ":5678")
-		assert.NoError(t, err)
-		if err != nil {
-			return
-		}
-
-		defer func() {
-			require.NoError(t, listener.Close())
-		}()
-
-		ready <- struct{}{}
-
+		defer close(done)
 		buffer := make([]byte, 8192)
 		rlen, _, err := listener.ReadFrom(buffer)
 
 		assert.NoError(t, err)
 		assert.Equal(t, mutatedData, buffer[0:rlen])
-		done <- struct{}{}
 	}()
 
-	<-ready
+	if err := l.socketHandler(ctx, handler, event, mutatedData); err != nil {
+		t.Fatal(err)
+	}
 
-	_, err := l.socketHandler(ctx, handler, event, mutatedData)
-
-	assert.NoError(t, err)
 	<-done
 }

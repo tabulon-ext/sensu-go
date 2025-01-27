@@ -7,18 +7,16 @@ import (
 	"reflect"
 	"testing"
 
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
-	corev3 "github.com/sensu/sensu-go/api/core/v3"
+	corev2 "github.com/sensu/core/v2"
+	corev3 "github.com/sensu/core/v3"
 	"github.com/sensu/sensu-go/backend/authorization"
 	"github.com/sensu/sensu-go/backend/store"
 	storev2 "github.com/sensu/sensu-go/backend/store/v2"
-	"github.com/sensu/sensu-go/backend/store/v2/storetest"
-	"github.com/sensu/sensu-go/backend/store/v2/wrap"
 	"github.com/sensu/sensu-go/testing/mockstore"
 	"github.com/stretchr/testify/mock"
 )
 
-func defaultTestClient(store store.ResourceStore, auth authorization.Authorizer) *GenericClient {
+func defaultTestClient(store storev2.Interface, auth authorization.Authorizer) *GenericClient {
 	return &GenericClient{
 		Kind:       defaultResource(),
 		Store:      store,
@@ -31,7 +29,7 @@ func defaultTestClient(store store.ResourceStore, auth authorization.Authorizer)
 func defaultV2TestClient(store storev2.Interface, auth authorization.Authorizer) *GenericClient {
 	return &GenericClient{
 		Kind:       defaultV3Resource(),
-		StoreV2:    store,
+		Store:      store,
 		Auth:       auth,
 		APIGroup:   "core",
 		APIVersion: "v3",
@@ -39,28 +37,29 @@ func defaultV2TestClient(store storev2.Interface, auth authorization.Authorizer)
 }
 
 func defaultV2ResourceStore() storev2.Interface {
-	store := new(storetest.Store)
-	wrappedResource, err := storev2.WrapResource(corev3.FixtureEntityConfig("default"))
-	if err != nil {
-		panic(err)
-	}
-	store.On("Get", mock.Anything).Return(wrappedResource, nil)
-	store.On("List", mock.Anything, mock.Anything).Return(wrap.List{wrappedResource.(*wrap.Wrapper)}, nil)
-	store.On("CreateIfNotExists", mock.Anything, mock.Anything).Return(nil)
-	store.On("CreateOrUpdate", mock.Anything, mock.Anything).Return(nil)
-	store.On("Delete", mock.Anything).Return(nil)
+	store := new(mockstore.V2MockStore)
+	entity := corev3.FixtureEntityConfig("default")
+	es := new(mockstore.EntityConfigStore)
+	store.On("GetEntityConfigStore").Return(es)
+	es.On("Get", mock.Anything, mock.Anything, mock.Anything).Return(entity, nil)
+	es.On("List", mock.Anything, mock.Anything, mock.Anything).Return([]*corev3.EntityConfig{entity}, nil)
+	es.On("CreateIfNotExists", mock.Anything, mock.Anything).Return(nil)
+	es.On("CreateOrUpdate", mock.Anything, mock.Anything).Return(nil)
+	es.On("Delete", mock.Anything, mock.Anything, mock.Anything).Return(nil)
+	cs := new(mockstore.ConfigStore)
+	store.On("GetConfigStore").Return(cs)
 	return store
 }
 
-func defaultV3Resource() corev2.Resource {
-	return corev3.V3ToV2Resource(corev3.FixtureEntityConfig("default"))
+func defaultV3Resource() corev3.Resource {
+	return corev3.FixtureEntityConfig("default")
 }
 
 type mockAuth struct {
 	attrs map[authorization.AttributesKey]bool
 }
 
-func defaultResource() corev2.Resource {
+func defaultResource() corev3.Resource {
 	return corev2.FixtureAsset("default")
 }
 
@@ -86,19 +85,15 @@ func contextWithUser(ctx context.Context, username string, groups []string) cont
 	return context.WithValue(ctx, corev2.ClaimsKey, corev2.FixtureClaims(username, groups))
 }
 
-func defaultResourceStore() store.ResourceStore {
-	store := &mockstore.MockStore{}
-	store.On("GetResource", mock.Anything, "default", mock.Anything).Run(func(args mock.Arguments) {
-		arg := args.Get(2).(*corev2.Asset)
-		*arg = *corev2.FixtureAsset("default")
-	}).Return(nil)
-	store.On("ListResources", mock.Anything, (&corev2.Asset{}).StorePrefix(), mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
-		arg := args.Get(2).(*[]corev2.Resource)
-		*arg = []corev2.Resource{defaultResource()}
-	}).Return(nil)
-	store.On("CreateResource", mock.Anything, mock.Anything).Return(nil)
-	store.On("CreateOrUpdateResource", mock.Anything, mock.Anything).Return(nil)
-	store.On("DeleteResource", mock.Anything, mock.Anything, mock.Anything).Return(nil)
+func defaultResourceStore() storev2.Interface {
+	store := &mockstore.V2MockStore{}
+	cs := new(mockstore.ConfigStore)
+	store.On("GetConfigStore").Return(cs)
+	cs.On("Get", mock.Anything, mock.Anything).Return(mockstore.Wrapper[*corev2.Asset]{Value: corev2.FixtureAsset("default")}, nil)
+	cs.On("List", mock.Anything, mock.Anything, mock.Anything).Return(mockstore.WrapList[corev3.Resource]{defaultResource()}, nil)
+	cs.On("CreateIfNotExists", mock.Anything, mock.Anything, mock.Anything).Return(nil)
+	cs.On("CreateOrUpdate", mock.Anything, mock.Anything, mock.Anything).Return(nil)
+	cs.On("Delete", mock.Anything, mock.Anything).Return(nil)
 	return store
 }
 
@@ -106,18 +101,21 @@ func TestGenericClient(t *testing.T) {
 	tests := []struct {
 		Name      string
 		Client    *GenericClient
-		CreateVal corev2.Resource
+		CreateVal corev3.Resource
 		CreateErr bool
-		UpdateVal corev2.Resource
+		UpdateVal corev3.Resource
 		UpdateErr bool
 		GetName   string
-		GetVal    corev2.Resource
+		GetVal    corev3.Resource
 		GetErr    bool
-		ListVal   []corev2.Resource
+		ListVal   []corev3.Resource
 		ListPred  *store.SelectionPredicate
 		ListErr   bool
 		DelName   string
 		DelErr    bool
+		AuthVerb  RBACVerb
+		AuthName  string
+		AuthErr   bool
 		Ctx       context.Context
 	}{
 		{
@@ -133,6 +131,9 @@ func TestGenericClient(t *testing.T) {
 			DelName:   "todelete",
 			DelErr:    true,
 			ListErr:   true,
+			AuthVerb:  VerbGet,
+			AuthName:  "todelete",
+			AuthErr:   true,
 			Ctx:       contextWithUser(defaultContext(), "tom", nil),
 		},
 		{
@@ -168,6 +169,9 @@ func TestGenericClient(t *testing.T) {
 			DelName:   "default",
 			DelErr:    true,
 			ListErr:   false,
+			AuthVerb:  VerbDelete,
+			AuthName:  "default",
+			AuthErr:   true,
 			Ctx:       contextWithUser(defaultContext(), "tom", nil),
 		},
 		{
@@ -230,6 +234,9 @@ func TestGenericClient(t *testing.T) {
 			DelName:   "default",
 			DelErr:    false,
 			ListErr:   false,
+			AuthVerb:  VerbGet,
+			AuthName:  "default",
+			AuthErr:   false,
 			Ctx:       contextWithUser(defaultContext(), "tom", nil),
 		},
 	}
@@ -286,6 +293,15 @@ func TestGenericClient(t *testing.T) {
 				if err == nil && val.Validate() != nil {
 					t.Fatal(val.Validate())
 				}
+			}
+		})
+		t.Run(test.Name+"_authorize", func(t *testing.T) {
+			err := test.Client.Authorize(test.Ctx, test.AuthVerb, test.AuthName)
+			if err != nil && !test.AuthErr {
+				t.Fatal(err)
+			}
+			if err == nil && test.AuthErr {
+				t.Fatal(err)
 			}
 		})
 	}
@@ -363,14 +379,14 @@ func TestGenericClientStoreV2(t *testing.T) {
 	tests := []struct {
 		Name      string
 		Client    *GenericClient
-		CreateVal corev2.Resource
+		CreateVal corev3.Resource
 		CreateErr bool
-		UpdateVal corev2.Resource
+		UpdateVal corev3.Resource
 		UpdateErr bool
 		GetName   string
-		GetVal    corev2.Resource
+		GetVal    corev3.Resource
 		GetErr    bool
-		ListVal   []corev2.Resource
+		ListVal   []corev3.Resource
 		ListPred  *store.SelectionPredicate
 		ListErr   bool
 		DelName   string
@@ -400,7 +416,7 @@ func TestGenericClientStoreV2(t *testing.T) {
 						APIGroup:     "core",
 						APIVersion:   "v3",
 						Namespace:    "default",
-						Resource:     "entity_configs",
+						Resource:     "entities",
 						ResourceName: "default",
 						UserName:     "tom",
 						Verb:         "get",
@@ -409,7 +425,7 @@ func TestGenericClientStoreV2(t *testing.T) {
 						APIGroup:   "core",
 						APIVersion: "v3",
 						Namespace:  "default",
-						Resource:   "entity_configs",
+						Resource:   "entities",
 						UserName:   "tom",
 						Verb:       "list",
 					}: true,
@@ -435,7 +451,7 @@ func TestGenericClientStoreV2(t *testing.T) {
 						APIGroup:     "core",
 						APIVersion:   "v3",
 						Namespace:    "default",
-						Resource:     "entity_configs",
+						Resource:     "entities",
 						ResourceName: "default",
 						UserName:     "tom",
 						Verb:         "get",
@@ -444,7 +460,7 @@ func TestGenericClientStoreV2(t *testing.T) {
 						APIGroup:     "core",
 						APIVersion:   "v3",
 						Namespace:    "default",
-						Resource:     "entity_configs",
+						Resource:     "entities",
 						ResourceName: "default",
 						UserName:     "tom",
 						Verb:         "create",
@@ -453,7 +469,7 @@ func TestGenericClientStoreV2(t *testing.T) {
 						APIGroup:     "core",
 						APIVersion:   "v3",
 						Namespace:    "default",
-						Resource:     "entity_configs",
+						Resource:     "entities",
 						ResourceName: "default",
 						UserName:     "tom",
 						Verb:         "delete",
@@ -462,7 +478,7 @@ func TestGenericClientStoreV2(t *testing.T) {
 						APIGroup:     "core",
 						APIVersion:   "v3",
 						Namespace:    "default",
-						Resource:     "entity_configs",
+						Resource:     "entities",
 						ResourceName: "default",
 						UserName:     "tom",
 						Verb:         "update",
@@ -471,7 +487,7 @@ func TestGenericClientStoreV2(t *testing.T) {
 						APIGroup:   "core",
 						APIVersion: "v3",
 						Namespace:  "default",
-						Resource:   "entity_configs",
+						Resource:   "entities",
 						UserName:   "tom",
 						Verb:       "list",
 					}: true,
@@ -548,6 +564,99 @@ func TestGenericClientStoreV2(t *testing.T) {
 	}
 }
 
+func TestGenericClientStoreV2_sensu_enterprise_go_GH2484(t *testing.T) {
+	t.Skip("skipped")
+	makeStore := func(entity *corev3.EntityConfig) storev2.Interface {
+		store := new(mockstore.V2MockStore)
+		es := new(mockstore.EntityConfigStore)
+		store.On("GetEntityConfigStore").Return(es)
+		if entity == nil {
+			entity = corev3.FixtureEntityConfig("default")
+			entity.Redact = []string{"password"}
+			entity.Metadata.Labels["password"] = "test"
+			entity.Metadata.Labels["my_label"] = "test"
+		}
+		es.On("Get", mock.Anything, mock.Anything, mock.Anything).Return(entity, nil)
+		es.On("List", mock.Anything, mock.Anything, mock.Anything).Return([]*corev3.EntityConfig{entity}, nil)
+		return store
+	}
+	v3AllAccess := func() authorization.Authorizer {
+		return &mockAuth{
+			attrs: map[authorization.AttributesKey]bool{
+				{
+					APIGroup:     "core",
+					APIVersion:   "v3",
+					Namespace:    "default",
+					Resource:     "entities",
+					ResourceName: "default",
+					UserName:     "tom",
+					Verb:         "get",
+				}: true,
+				{
+					APIGroup:     "core",
+					APIVersion:   "v3",
+					Namespace:    "default",
+					Resource:     "entities",
+					ResourceName: "default",
+					UserName:     "tom",
+					Verb:         "create",
+				}: true,
+				{
+					APIGroup:     "core",
+					APIVersion:   "v3",
+					Namespace:    "default",
+					Resource:     "entities",
+					ResourceName: "default",
+					UserName:     "tom",
+					Verb:         "delete",
+				}: true,
+				{
+					APIGroup:     "core",
+					APIVersion:   "v3",
+					Namespace:    "default",
+					Resource:     "entities",
+					ResourceName: "default",
+					UserName:     "tom",
+					Verb:         "update",
+				}: true,
+				{
+					APIGroup:   "core",
+					APIVersion: "v3",
+					Namespace:  "default",
+					Resource:   "entities",
+					UserName:   "tom",
+					Verb:       "list",
+				}: true,
+			},
+		}
+	}
+
+	ctx := contextWithUser(defaultContext(), "tom", nil)
+	client := defaultV2TestClient(makeStore(nil), v3AllAccess())
+	listVal := []corev3.Resource{}
+	if err := client.List(ctx, &listVal, &store.SelectionPredicate{}); err != nil {
+		t.Fatal(err)
+	}
+	if listVal[0].GetMetadata().Labels["password"] != corev2.Redacted {
+		t.Errorf("Labels['password'] = %s, got: %s", corev2.Redacted, listVal[0].GetMetadata().Labels["password"])
+	}
+	if listVal[0].GetMetadata().Labels["my_label"] != "test" {
+		t.Errorf("Labels['my_label'] = %s, got: %s", "test", listVal[0].GetMetadata().Labels["my_label"])
+	}
+
+	client = defaultV2TestClient(makeStore(nil), v3AllAccess())
+	getVal := &corev3.EntityConfig{}
+	if err := client.Get(ctx, "default", getVal); err != nil {
+		t.Fatal(err)
+	}
+	if getVal.GetMetadata().Labels["password"] != corev2.Redacted {
+		t.Errorf("Labels['password'] = %s, got: %s", corev2.Redacted, getVal.GetMetadata().Labels["password"])
+	}
+	if getVal.GetMetadata().Labels["my_label"] != "test" {
+		t.Errorf("Labels['my_label'] = %s, got: %s", "test", getVal.GetMetadata().Labels["my_label"])
+	}
+}
+
 func TestSetTypeMetaV3Resource(t *testing.T) {
 	client := &GenericClient{}
 	err := client.SetTypeMeta(corev2.TypeMeta{
@@ -557,7 +666,7 @@ func TestSetTypeMetaV3Resource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := client.Kind.(*corev3.V2ResourceProxy); !ok {
-		t.Errorf("expected a v2 resource proxy")
+	if _, ok := client.Kind.(*corev3.EntityConfig); !ok {
+		t.Error("expected an entityconfig")
 	}
 }

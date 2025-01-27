@@ -12,7 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/sensu/sensu-go/agent/transformers"
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	corev2 "github.com/sensu/core/v2"
 	"github.com/sensu/sensu-go/asset"
 	"github.com/sensu/sensu-go/command"
 	"github.com/sensu/sensu-go/token"
@@ -33,7 +33,7 @@ func (a *Agent) handleCheck(ctx context.Context, payload []byte) error {
 	request := &corev2.CheckRequest{}
 	if err := a.unmarshal(payload, request); err != nil {
 		return err
-	} else if request == nil {
+	} else if !request.Validate() {
 		return errors.New("given check configuration appears invalid")
 	}
 
@@ -75,7 +75,7 @@ func (a *Agent) handleCheck(ctx context.Context, payload []byte) error {
 }
 
 // handleCheckNoop is used to discard incoming check requests
-func (a *Agent) handleCheckNoop(ctx context.Context, payload []byte) error {
+func (a *Agent) handleCheckNoop(_ context.Context, _ []byte) error {
 	return nil
 }
 
@@ -263,6 +263,10 @@ func (a *Agent) executeCheck(ctx context.Context, request *corev2.CheckRequest, 
 
 	if check.OutputMetricFormat != "" {
 		event.Metrics.Points = extractMetrics(event)
+
+		if event.Check.Status == 0 && len(event.Metrics.Points) > 0 && len(check.OutputMetricThresholds) > 0 {
+			event.Check.Status = evaluateOutputMetricThresholds(event)
+		}
 	}
 
 	if len(check.OutputMetricHandlers) != 0 {
@@ -352,4 +356,204 @@ func extractMetrics(event *corev2.Event) []*corev2.MetricPoint {
 	}
 
 	return transformer.Transform()
+}
+
+func evaluateOutputMetricThresholds(event *corev2.Event) uint32 {
+	if event.Check.Status > 0 {
+		return event.Check.Status
+	}
+
+	points := event.Metrics.Points
+	thresholds := event.Check.OutputMetricThresholds
+
+	var overallStatus uint32 = 0
+	annotationValue := ""
+	for _, thresholdRule := range thresholds {
+		ruleMatched := false
+		for _, metricPoint := range points {
+			if thresholdRule.MatchesMetricPoint(metricPoint) {
+				ruleMatched = true
+				var status uint32 = 0
+				isExceeded := false
+				for _, rule := range thresholdRule.Thresholds {
+					if rule.Min != "" {
+						min, err := strconv.ParseFloat(rule.Min, 64)
+						if err != nil {
+							continue
+						}
+						if metricPoint.Value < min {
+							isExceeded = true
+							if status < rule.Status {
+								status = rule.Status
+							}
+							if overallStatus < rule.Status {
+								overallStatus = rule.Status
+								annotationValue = getAnnotationValue(thresholdRule, metricPoint.Value, isExceeded)
+							}
+							continue
+						} else {
+							annotationValue = getAnnotationValue(thresholdRule, metricPoint.Value, isExceeded)
+						}
+					}
+					if rule.Max != "" {
+						max, err := strconv.ParseFloat(rule.Max, 64)
+						if err != nil {
+							continue
+						}
+						if metricPoint.Value > max {
+							isExceeded = true
+							if status < rule.Status {
+								status = rule.Status
+							}
+							if overallStatus < rule.Status {
+								overallStatus = rule.Status
+								annotationValue = getAnnotationValue(thresholdRule, metricPoint.Value, isExceeded)
+							}
+						} else {
+							annotationValue = getAnnotationValue(thresholdRule, metricPoint.Value, isExceeded)
+						}
+					}
+				}
+				addThresholdAnnotation(event, thresholdRule, status, metricPoint.Value, isExceeded)
+			}
+		}
+		if !ruleMatched {
+			if thresholdRule.NullStatus > 0 {
+				addNullStatusThresholdAnnotation(event, thresholdRule, thresholdRule.NullStatus)
+				if overallStatus < thresholdRule.NullStatus {
+					overallStatus = thresholdRule.NullStatus
+					annotationValue = getNullStatusAnnotationValue(thresholdRule)
+				}
+			}
+		}
+	}
+
+	if annotationValue != "" {
+		event.AddAnnotation("sensu.io/notifications/"+corev2.CheckStatusToCaption(overallStatus), annotationValue)
+	}
+
+	return overallStatus
+}
+
+func addThresholdAnnotation(event *corev2.Event, metricThreshold *corev2.MetricThreshold, status uint32, value float64, isExceeded bool) {
+	event.AddAnnotation(getAnnotationKey(metricThreshold, status), getAnnotationValue(metricThreshold, value, isExceeded))
+}
+
+func addNullStatusThresholdAnnotation(event *corev2.Event, metricThreshold *corev2.MetricThreshold, status uint32) {
+	event.AddAnnotation(getAnnotationKey(metricThreshold, status), getNullStatusAnnotationValue(metricThreshold))
+}
+
+func getAnnotationKey(metricThreshold *corev2.MetricThreshold, status uint32) string {
+	var key strings.Builder
+
+	key.WriteString("sensu.io/output_metric_thresholds/")
+	key.WriteString(metricThreshold.Name)
+	for _, tag := range metricThreshold.Tags {
+		key.WriteString(".")
+		key.WriteString(tag.Value)
+	}
+	key.WriteString("/")
+	key.WriteString(corev2.CheckStatusToCaption(status))
+
+	return key.String()
+}
+
+func getAnnotationValue(metricThreshold *corev2.MetricThreshold, value float64, isExceeded bool) string {
+	var val strings.Builder
+	var tagsKeyVal strings.Builder
+
+	for tagIdx, tag := range metricThreshold.Tags {
+		if tagIdx > 0 {
+			tagsKeyVal.WriteString(",")
+		}
+		tagsKeyVal.WriteString(tag.Name)
+		tagsKeyVal.WriteString("=")
+		tagsKeyVal.WriteString(tag.Value)
+	}
+
+	val.WriteString("The value of ")
+	val.WriteString(metricThreshold.Name)
+	if tagsKeyVal.Len() > 0 {
+		val.WriteString(" (")
+		val.WriteString(tagsKeyVal.String())
+		val.WriteString(")")
+	}
+	if isExceeded {
+		val.WriteString(" exceeded the configured threshold")
+	} else {
+		val.WriteString(" is within the configured threshold")
+	}
+
+	for _, t := range metricThreshold.Thresholds {
+		hasMin := len(t.Min) > 0
+		hasMax := len(t.Max) > 0
+		val.WriteString("; expected ")
+		if hasMin {
+			val.WriteString("min: ")
+			val.WriteString(t.Min)
+		}
+		if hasMin && hasMax {
+			val.WriteString(" - ")
+		}
+		if hasMax {
+			val.WriteString("max: ")
+			val.WriteString(t.Max)
+		}
+		val.WriteString(" (status: ")
+		val.WriteString(corev2.CheckStatusToCaption(t.Status))
+		val.WriteString(")")
+	}
+
+	val.WriteString("; actual: ")
+	val.WriteString(strconv.FormatFloat(value, 'f', -1, 64))
+
+	return val.String()
+}
+
+func getNullStatusAnnotationValue(metricThreshold *corev2.MetricThreshold) string {
+	var val strings.Builder
+	var tagsKeyVal strings.Builder
+
+	for tagIdx, tag := range metricThreshold.Tags {
+		if tagIdx > 0 {
+			tagsKeyVal.WriteString(", ")
+		}
+		tagsKeyVal.WriteString(tag.Name)
+		tagsKeyVal.WriteString("=\"")
+		tagsKeyVal.WriteString(tag.Value)
+		tagsKeyVal.WriteString("\"")
+	}
+
+	val.WriteString(strings.ToUpper(corev2.CheckStatusToCaption(metricThreshold.NullStatus)))
+	val.WriteString(" : no metric matching \"")
+	val.WriteString(metricThreshold.Name)
+	val.WriteString("\"")
+	if tagsKeyVal.Len() > 0 {
+		val.WriteString(" (")
+		val.WriteString(tagsKeyVal.String())
+		val.WriteString(")")
+	}
+	val.WriteString(" was found")
+
+	for _, t := range metricThreshold.Thresholds {
+		hasMin := len(t.Min) > 0
+		hasMax := len(t.Max) > 0
+		val.WriteString("; expected ")
+		if hasMin {
+			val.WriteString("min: ")
+			val.WriteString(t.Min)
+		}
+		if hasMin && hasMax {
+			val.WriteString(" - ")
+		}
+		if hasMax {
+			val.WriteString("max: ")
+			val.WriteString(t.Max)
+		}
+		val.WriteString(" (status: ")
+		val.WriteString(corev2.CheckStatusToCaption(t.Status))
+		val.WriteString(")")
+	}
+
+	return val.String()
 }

@@ -1,31 +1,17 @@
 package actions
 
 import (
-	"crypto/tls"
+	"context"
 
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
-	"github.com/sensu/sensu-go/backend/store"
-	"go.etcd.io/etcd/client/v3"
-	"golang.org/x/net/context"
+	corev2 "github.com/sensu/core/v2"
 )
 
 // HealthController exposes actions which a viewer can perform
 type HealthController struct {
-	store               store.HealthStore
-	cluster             clientv3.Cluster
-	etcdClientTLSConfig *tls.Config
-}
-
-// NewHealthController returns new HealthController
-func NewHealthController(store store.HealthStore, cluster clientv3.Cluster, etcdClientTLSConfig *tls.Config) HealthController {
-	return HealthController{
-		store:               store,
-		cluster:             cluster,
-		etcdClientTLSConfig: etcdClientTLSConfig,
-	}
+	// TODO decide if we want to remove this concept of health
 }
 
 // GetClusterHealth returns health information
 func (h HealthController) GetClusterHealth(ctx context.Context) *corev2.HealthResponse {
-	return h.store.GetClusterHealth(ctx, h.cluster, h.etcdClientTLSConfig)
+	return &corev2.HealthResponse{}
 }

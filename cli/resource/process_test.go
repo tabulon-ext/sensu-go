@@ -11,9 +11,9 @@ import (
 	"reflect"
 	"testing"
 
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
-	"github.com/sensu/sensu-go/types"
-	"github.com/sensu/sensu-go/types/compat"
+	corev2 "github.com/sensu/core/v2"
+	corev3 "github.com/sensu/core/v3"
+	"github.com/sensu/core/v3/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -112,11 +112,8 @@ func TestManagedByLabelPutter_label(t *testing.T) {
 			processor := NewManagedByLabelPutter("sensuctl")
 			processor.label(&got)
 
-			if !reflect.DeepEqual(got.ObjectMeta.Labels, tt.want) {
-				t.Errorf("inner labels = %v, want %v", got.ObjectMeta.Labels, tt.want)
-			}
-			if !reflect.DeepEqual(compat.GetObjectMeta(got.Value).Labels, tt.want) {
-				t.Errorf("outer labels = %v, want %v", compat.GetObjectMeta(got.Value).Labels, tt.want)
+			if !reflect.DeepEqual(got.Value.(corev3.Resource).GetMetadata().Labels, tt.want) {
+				t.Errorf("outer labels = %v, want %v", got.Value.(corev3.Resource).GetMetadata().Labels, tt.want)
 			}
 		})
 	}

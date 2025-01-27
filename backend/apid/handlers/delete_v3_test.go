@@ -13,7 +13,7 @@ import (
 )
 
 func TestHandlers_DeleteV3Resource(t *testing.T) {
-	type storeFunc func(*mockstore.V2MockStore)
+	type storeFunc func(*mockstore.ConfigStore)
 	tests := []struct {
 		name      string
 		urlVars   map[string]string
@@ -28,8 +28,8 @@ func TestHandlers_DeleteV3Resource(t *testing.T) {
 		{
 			name:    "store ErrNotFound",
 			urlVars: map[string]string{"id": "foo"},
-			storeFunc: func(s *mockstore.V2MockStore) {
-				s.On("Delete", mock.Anything).
+			storeFunc: func(s *mockstore.ConfigStore) {
+				s.On("Delete", mock.Anything, mock.Anything).
 					Return(&store.ErrNotFound{})
 			},
 			wantErr: true,
@@ -37,8 +37,8 @@ func TestHandlers_DeleteV3Resource(t *testing.T) {
 		{
 			name:    "store ErrInternal",
 			urlVars: map[string]string{"id": "foo"},
-			storeFunc: func(s *mockstore.V2MockStore) {
-				s.On("Delete", mock.Anything).
+			storeFunc: func(s *mockstore.ConfigStore) {
+				s.On("Delete", mock.Anything, mock.Anything).
 					Return(&store.ErrInternal{})
 			},
 			wantErr: true,
@@ -46,8 +46,8 @@ func TestHandlers_DeleteV3Resource(t *testing.T) {
 		{
 			name:    "successful delete",
 			urlVars: map[string]string{"id": "foo"},
-			storeFunc: func(s *mockstore.V2MockStore) {
-				s.On("Delete", mock.Anything).
+			storeFunc: func(s *mockstore.ConfigStore) {
+				s.On("Delete", mock.Anything, mock.Anything).
 					Return(nil)
 			},
 		},
@@ -55,19 +55,18 @@ func TestHandlers_DeleteV3Resource(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			store := &mockstore.V2MockStore{}
+			cs := new(mockstore.ConfigStore)
+			store.On("GetConfigStore").Return(cs)
 			if tt.storeFunc != nil {
-				tt.storeFunc(store)
+				tt.storeFunc(cs)
 			}
 
-			h := Handlers{
-				V3Resource: &fixture.V3Resource{},
-				StoreV2:    store,
-			}
+			h := NewHandlers[*fixture.V3Resource](store)
 
 			r, _ := http.NewRequest(http.MethodDelete, "/", nil)
 			r = mux.SetURLVars(r, tt.urlVars)
 
-			_, err := h.DeleteV3Resource(r)
+			_, err := h.DeleteResource(r)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Handlers.DeleteResource() error = %v, wantErr %v", err, tt.wantErr)
 				return

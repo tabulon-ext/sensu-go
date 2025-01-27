@@ -2,31 +2,23 @@ package wrap_test
 
 import (
 	"encoding/json"
-	fmt "fmt"
 	"testing"
 
 	//nolint:staticcheck // SA1004 Replacing this will take some planning.
 	"github.com/golang/protobuf/proto"
 
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
-	corev3 "github.com/sensu/sensu-go/api/core/v3"
+	corev2 "github.com/sensu/core/v2"
+	corev3 "github.com/sensu/core/v3"
+	apitools "github.com/sensu/sensu-api-tools"
+	"github.com/sensu/sensu-go/backend/store"
 	"github.com/sensu/sensu-go/backend/store/v2/wrap"
-	"github.com/sensu/sensu-go/types"
 )
 
 func init() {
-	types.RegisterResolver("v2/wrap_test", testResolver)
-}
-
-func testResolver(name string) (interface{}, error) {
-	switch name {
-	case "testResource":
-		return &testResource{}, nil
-	case "testResource2":
-		return &testResource2{}, nil
-	default:
-		return nil, fmt.Errorf("invalid resource: %s", name)
-	}
+	apitools.RegisterType("wrap_test/v2", new(testResource))
+	apitools.RegisterType("wrap_test/v2", new(testResource2))
+	apitools.RegisterType("v2/wrap_test", new(testResource))
+	apitools.RegisterType("v2/wrap_test", new(testResource2))
 }
 
 type testResource struct {
@@ -60,7 +52,7 @@ func (t *testResource) Validate() error {
 func (t *testResource) GetTypeMeta() corev2.TypeMeta {
 	return corev2.TypeMeta{
 		Type:       "testResource",
-		APIVersion: "v2/wrap_test",
+		APIVersion: "wrap_test/v2",
 	}
 }
 
@@ -81,7 +73,7 @@ func TestWrapResourceSimple(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := wrapper.TypeMeta.APIVersion, "v2/wrap_test"; got != want {
+	if got, want := wrapper.TypeMeta.APIVersion, "wrap_test/v2"; got != want {
 		t.Errorf("bad api version: got %s, want %s", got, want)
 	}
 	if got, want := wrapper.TypeMeta.Type, "testResource"; got != want {
@@ -91,6 +83,12 @@ func TestWrapResourceSimple(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	meta := unwrapped.GetMetadata()
+	// delete these to facilitate comparison
+	delete(meta.Labels, store.SensuCreatedAtKey)
+	delete(meta.Labels, store.SensuUpdatedAtKey)
+	delete(meta.Labels, store.SensuDeletedAtKey)
+	delete(meta.Annotations, store.SensuETagKey)
 	if got, want := unwrapped.GetMetadata(), resource.GetMetadata(); !proto.Equal(got, want) {
 		t.Errorf("bad resource: got %#v, want %#v", got, want)
 	}
@@ -173,6 +171,12 @@ func TestWrapResourceOptions(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			meta := resource.GetMetadata()
+			// delete these to facilitate comparison
+			delete(meta.Labels, store.SensuCreatedAtKey)
+			delete(meta.Labels, store.SensuUpdatedAtKey)
+			delete(meta.Labels, store.SensuDeletedAtKey)
+			delete(meta.Annotations, store.SensuETagKey)
 			if got, want := resource.GetMetadata(), test.Resource.GetMetadata(); !proto.Equal(got, want) {
 				t.Errorf("bad resource: got %v, want %v", got, want)
 			}
@@ -206,6 +210,13 @@ func (t *testResource2) URIPath() string {
 
 func (t *testResource2) Validate() error {
 	return nil
+}
+
+func (t *testResource2) GetTypeMeta() corev2.TypeMeta {
+	return corev2.TypeMeta{
+		Type:       "testResource2",
+		APIVersion: "wrap_test/v2",
+	}
 }
 
 func fixtureTestResource2(name string) *testResource2 {

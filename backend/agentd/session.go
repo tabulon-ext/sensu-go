@@ -2,6 +2,7 @@ package agentd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -11,14 +12,15 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
+	corev2 "github.com/sensu/core/v2"
+	corev3 "github.com/sensu/core/v3"
 	"github.com/sensu/sensu-go/agent"
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
-	corev3 "github.com/sensu/sensu-go/api/core/v3"
 	"github.com/sensu/sensu-go/backend/messaging"
 	"github.com/sensu/sensu-go/backend/metrics"
 	"github.com/sensu/sensu-go/backend/ringv2"
 	"github.com/sensu/sensu-go/backend/store"
 	storev2 "github.com/sensu/sensu-go/backend/store/v2"
+	"github.com/sensu/sensu-go/backend/store/v2/wrap"
 	"github.com/sensu/sensu-go/handler"
 	"github.com/sensu/sensu-go/transport"
 	"github.com/sirupsen/logrus"
@@ -82,7 +84,6 @@ var (
 type Session struct {
 	cfg              SessionConfig
 	conn             transport.Transport
-	store            store.EntityStore
 	storev2          storev2.Interface
 	handler          *handler.MessageHandler
 	wg               *sync.WaitGroup
@@ -139,7 +140,6 @@ type SessionConfig struct {
 	Bus      messaging.MessageBus
 	Conn     transport.Transport
 	RingPool *ringv2.RingPool
-	Store    store.Store
 	Storev2  storev2.Interface
 
 	Marshal   agent.MarshalFunc
@@ -165,7 +165,6 @@ func NewSession(ctx context.Context, cfg SessionConfig) (*Session, error) {
 		cfg:              cfg,
 		wg:               &sync.WaitGroup{},
 		checkChannel:     make(chan interface{}, 100),
-		store:            cfg.Store,
 		storev2:          cfg.Storev2,
 		bus:              cfg.Bus,
 		subscriptionsMap: map[string]subscription{},
@@ -179,40 +178,9 @@ func NewSession(ctx context.Context, cfg SessionConfig) (*Session, error) {
 			updatesChannel: make(chan interface{}, 10),
 		},
 	}
-	if err := s.bus.Publish(messaging.TopicKeepalive, makeEntitySwitchBurialEvent(cfg)); err != nil {
-		return nil, err
-	}
+
 	s.handler = newSessionHandler(s)
 	return s, nil
-}
-
-// When the session is created, it will send this event to keepalived, ensuring
-// that any previously existing switch is buried. This is necessary to make
-// sure that the switch is properly recreated if the timeouts have changed.
-//
-// Keepalived checks for deletedEventSentinel, so that other components can
-// message to it that a particular entity's switch can be buried.
-func makeEntitySwitchBurialEvent(cfg SessionConfig) *corev2.Event {
-	return &corev2.Event{
-		ObjectMeta: corev2.ObjectMeta{
-			Namespace: cfg.Namespace,
-		},
-		Entity: &corev2.Entity{
-			ObjectMeta: corev2.ObjectMeta{
-				Namespace: cfg.Namespace,
-				Name:      cfg.AgentName,
-			},
-			Subscriptions: cfg.Subscriptions,
-			EntityClass:   corev2.EntityAgentClass,
-		},
-		Check: &corev2.Check{
-			ObjectMeta: corev2.ObjectMeta{
-				Namespace: cfg.Namespace,
-				Name:      corev2.KeepaliveCheckName,
-			},
-		},
-		Timestamp: deletedEventSentinel,
-	}
 }
 
 // Receiver returns the check channel for the session.
@@ -276,56 +244,56 @@ func (s *Session) sender() {
 		logger.Info("shutting down agent session: stopping sender")
 	}()
 
+	ecstore := storev2.Of[*corev3.EntityConfig](s.storev2)
+
 	for {
 		var msg *transport.Message
 		select {
 		case e := <-s.entityConfig.updatesChannel:
-			watchEvent, ok := e.(*store.WatchEventEntityConfig)
-			if !ok {
+			watchEvent, ok := e.(*storev2.WatchEvent)
+			if !ok || watchEvent == nil {
 				logger.Errorf("session received unexpected struct: %T", e)
 				continue
 			}
 
 			// Handle the delete and unknown watch events
-			switch watchEvent.Action {
-			case store.WatchDelete:
+			switch watchEvent.Type {
+			case storev2.WatchDelete:
 				// stop session
 				return
-			case store.WatchUnknown:
+			case storev2.WatchUnknown:
 				logger.Error("session received unknown watch event")
 				continue
 			}
 
-			if watchEvent.Entity == nil {
+			entity, err := storev2.ReadEventValue[*corev3.EntityConfig](*watchEvent)
+			if err != nil {
+				logger.Error(err)
+				continue
+			}
+			if entity == nil {
 				logger.Error("session received nil entity in watch event")
 				continue
 			}
 
 			lager := logger.WithFields(logrus.Fields{
-				"action":    watchEvent.Action.String(),
-				"entity":    watchEvent.Entity.Metadata.Name,
-				"namespace": watchEvent.Entity.Metadata.Namespace,
+				"action":    watchEvent.Type.String(),
+				"entity":    entity.Metadata.Name,
+				"namespace": entity.Metadata.Namespace,
 			})
 			lager.Debug("entity update received")
 
 			// Enforce the entity class to agent
-			if watchEvent.Entity.EntityClass != corev2.EntityAgentClass {
-				watchEvent.Entity.EntityClass = corev2.EntityAgentClass
+			if entity.EntityClass != corev2.EntityAgentClass {
+				entity.EntityClass = corev2.EntityAgentClass
 				lager.Warningf(
 					"misconfigured entity class %q, updating entity to be a %s",
-					watchEvent.Entity.EntityClass,
+					entity.EntityClass,
 					corev2.EntityAgentClass,
 				)
 
 				// Update the entity in the store
-				configReq := storev2.NewResourceRequestFromResource(s.ctx, watchEvent.Entity)
-				wrapper, err := storev2.WrapResource(watchEvent.Entity)
-				if err != nil {
-					lager.WithError(err).Error("could not wrap the entity config")
-					continue
-				}
-
-				if err := s.storev2.CreateOrUpdate(configReq, wrapper); err != nil {
+				if err := ecstore.CreateOrUpdate(s.ctx, entity); err != nil {
 					sessionErrorCounter.WithLabelValues(err.Error()).Inc()
 					lager.WithError(err).Error("could not update the entity config")
 				}
@@ -335,7 +303,7 @@ func (s *Session) sender() {
 				continue
 			}
 
-			bytes, err := s.marshal(watchEvent.Entity)
+			bytes, err := s.marshal(entity)
 			if err != nil {
 				lager.WithError(err).Error("session failed to serialize entity config")
 				continue
@@ -345,7 +313,7 @@ func (s *Session) sender() {
 			// sorting the subscriptions and then comparing those
 			s.mu.Lock()
 			oldSubscriptions := sortSubscriptions(s.cfg.Subscriptions)
-			newSubscriptions := sortSubscriptions(watchEvent.Entity.Subscriptions)
+			newSubscriptions := sortSubscriptions(entity.Subscriptions)
 			added, removed := diff(oldSubscriptions, newSubscriptions)
 			s.cfg.Subscriptions = newSubscriptions
 			s.mu.Unlock()
@@ -360,7 +328,7 @@ func (s *Session) sender() {
 				s.unsubscribe(removed)
 			}
 
-			if watchEvent.Entity.Metadata.Labels[corev2.ManagedByLabel] == "sensu-agent" {
+			if entity.Metadata.Labels[corev2.ManagedByLabel] == "sensu-agent" {
 				lager.Debug("not sending entity update because entity is managed by its agent")
 			}
 
@@ -430,8 +398,18 @@ func (s *Session) Start() (err error) {
 		"namespace": s.cfg.Namespace,
 	})
 
+	topic := messaging.TopicAgentConnectionState
+	err = s.bus.Publish(topic, messaging.AgentNotification{
+		Namespace: s.cfg.Namespace,
+		Name:      s.cfg.AgentName,
+		Connected: true,
+	})
+	if err != nil {
+		lager.WithError(err).Error("error sending agent connect notification")
+	}
+
 	// Subscribe the agent to its entity_config topic
-	topic := messaging.EntityConfigTopic(s.cfg.Namespace, s.cfg.AgentName)
+	topic = messaging.EntityConfigTopic(s.cfg.Namespace, s.cfg.AgentName)
 	lager.WithField("topic", topic).Debug("subscribing to topic")
 	// Get a unique name for the agent, which will be used as the consumer of the
 	// bus, in order to avoid problems with an agent reconnecting before its
@@ -445,8 +423,9 @@ func (s *Session) Start() (err error) {
 	s.entityConfig.subscriptions <- subscription
 
 	// Determine if the entity already exists
-	req := storev2.NewResourceRequest(s.ctx, s.cfg.Namespace, s.cfg.AgentName, (&corev3.EntityConfig{}).StoreName())
-	wrapper, err := s.storev2.Get(req)
+	ecstore := storev2.Of[*corev3.EntityConfig](s.storev2)
+
+	storedEntityConfig, err := ecstore.Get(s.ctx, storev2.ID{Namespace: s.cfg.Namespace, Name: s.cfg.AgentName})
 	if err != nil {
 		// We do not want to send an error if the entity config does not exist
 		if _, ok := err.(*store.ErrNotFound); !ok {
@@ -457,11 +436,19 @@ func (s *Session) Start() (err error) {
 
 		// Indicate to the agent that this entity does not exist
 		meta := corev2.NewObjectMeta(corev3.EntityNotFound, s.cfg.Namespace)
-		watchEvent := &store.WatchEventEntityConfig{
-			Action: store.WatchCreate,
-			Entity: &corev3.EntityConfig{
-				Metadata:    &meta,
-				EntityClass: corev2.EntityAgentClass,
+		emptyConfig := corev3.EntityConfig{
+			Metadata:    &meta,
+			EntityClass: corev2.EntityAgentClass,
+		}
+		tm := emptyConfig.GetTypeMeta()
+		emptyCfgJson, _ := json.Marshal(emptyConfig)
+		watchEvent := &storev2.WatchEvent{
+			Type: storev2.WatchCreate,
+			Value: &wrap.Wrapper{
+				TypeMeta:    &tm,
+				Encoding:    wrap.Encoding_json,
+				Compression: wrap.Compression_none,
+				Value:       emptyCfgJson,
 			},
 		}
 		err = s.bus.Publish(messaging.EntityConfigTopic(s.cfg.Namespace, s.cfg.AgentName), watchEvent)
@@ -473,14 +460,6 @@ func (s *Session) Start() (err error) {
 		// An entity config already exists, therefore we should use the stored
 		// entity subscriptions rather than what the agent provided us for the
 		// subscriptions
-		lager.Debug("an entity config was found")
-
-		var storedEntityConfig corev3.EntityConfig
-		err = wrapper.UnwrapInto(&storedEntityConfig)
-		if err != nil {
-			lager.WithError(err).Error("error unwrapping entity config")
-			return err
-		}
 
 		// Remove the managed_by label if the value is sensu-agent, in case the
 		// entity is no longer managed by its agent
@@ -488,11 +467,17 @@ func (s *Session) Start() (err error) {
 			delete(storedEntityConfig.Metadata.Labels, corev2.ManagedByLabel)
 		}
 
+		wrapper, err := storev2.WrapResource(storedEntityConfig)
+		if err != nil {
+			lager.WithError(err).Error("error wrapping entity config")
+			return err
+		}
+
 		// Send back this entity config to the agent so it uses that rather than
 		// its local config for its events
-		watchEvent := &store.WatchEventEntityConfig{
-			Action: store.WatchUpdate,
-			Entity: &storedEntityConfig,
+		watchEvent := &storev2.WatchEvent{
+			Type:  storev2.WatchUpdate,
+			Value: wrapper,
 		}
 		err = s.bus.Publish(messaging.EntityConfigTopic(s.cfg.Namespace, s.cfg.AgentName), watchEvent)
 		if err != nil {
@@ -535,8 +520,20 @@ func (s *Session) stop() {
 			logger.WithError(err).Error("error closing session")
 		}
 	}()
+	defer close(s.entityConfig.updatesChannel)
+	defer close(s.checkChannel)
 
 	sessionCounter.WithLabelValues(s.cfg.Namespace).Dec()
+
+	topic := messaging.TopicAgentConnectionState
+	err := s.bus.Publish(topic, messaging.AgentNotification{
+		Namespace: s.cfg.Namespace,
+		Name:      s.cfg.AgentName,
+		Connected: false,
+	})
+	if err != nil {
+		logger.WithError(err).Error("error sending agent disconnect notification")
+	}
 
 	// Gracefully wait for the send and receiver to exit, but force the websocket
 	// connection to close itself after the grace period
@@ -550,9 +547,6 @@ func (s *Session) stop() {
 	case <-time.After(closeGracePeriod):
 		sessionErrorCounter.WithLabelValues("GracePeriodExpired").Inc()
 	}
-
-	close(s.entityConfig.updatesChannel)
-	close(s.checkChannel)
 
 	// Remove the entity config subscriptions
 	for sub := range s.entityConfig.subscriptions {

@@ -1,24 +1,35 @@
 package api
 
+//lint:file-ignore S1011 staticcheck bug?
+
 import (
 	"context"
 	"errors"
 	"fmt"
 	"path"
 
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
-	corev3 "github.com/sensu/sensu-go/api/core/v3"
+	corev2 "github.com/sensu/core/v2"
+	corev3 "github.com/sensu/core/v3"
+	apitools "github.com/sensu/sensu-api-tools"
 	"github.com/sensu/sensu-go/backend/authorization"
 	"github.com/sensu/sensu-go/backend/store"
 	storev2 "github.com/sensu/sensu-go/backend/store/v2"
-	"github.com/sensu/sensu-go/types"
+)
+
+type RBACVerb string
+
+const (
+	VerbGet    RBACVerb = "get"
+	VerbList   RBACVerb = "list"
+	VerbCreate RBACVerb = "create"
+	VerbUpdate RBACVerb = "update"
+	VerbDelete RBACVerb = "delete"
 )
 
 // GenericClient is a generic API client that uses the ResourceStore.
 type GenericClient struct {
-	Kind       corev2.Resource
-	Store      store.ResourceStore
-	StoreV2    storev2.Interface
+	Kind       corev3.Resource
+	Store      storev2.Interface
 	Auth       authorization.Authorizer
 	APIGroup   string
 	APIVersion string
@@ -28,8 +39,7 @@ func (g GenericClient) validateConfig() error {
 	if g.Kind == nil {
 		return errors.New("nil Kind")
 	}
-	_, v3Resource := g.Kind.(*corev3.V2ResourceProxy)
-	if g.Store == nil && (g.StoreV2 == nil && v3Resource) {
+	if g.Store == nil {
 		return errors.New("nil store")
 	}
 	if g.Auth == nil {
@@ -41,37 +51,35 @@ func (g GenericClient) validateConfig() error {
 	return nil
 }
 
-func (g *GenericClient) createResource(ctx context.Context, value corev2.Resource) error {
-	if value, ok := value.(*corev3.V2ResourceProxy); ok {
-		resource := value.Resource
-		req := storev2.NewResourceRequestFromResource(ctx, resource)
-		req.Namespace = corev2.ContextNamespace(ctx)
-		wrapper, err := storev2.WrapResource(resource)
-		if err != nil {
-			return err
-		}
-		return g.StoreV2.CreateIfNotExists(req, wrapper)
+func (g *GenericClient) createResource(ctx context.Context, value corev3.Resource) error {
+	switch value := value.(type) {
+	case *corev3.EntityConfig:
+		return g.Store.GetEntityConfigStore().CreateIfNotExists(ctx, value)
+	case *corev3.EntityState:
+		return g.Store.GetEntityStateStore().CreateIfNotExists(ctx, value)
+	case *corev3.Namespace:
+		return g.Store.GetNamespaceStore().CreateIfNotExists(ctx, value)
 	}
-	return g.Store.CreateResource(ctx, value)
+	req := storev2.NewResourceRequestFromResource(value)
+	if gr, ok := g.Kind.(corev3.GlobalResource); !ok || !gr.IsGlobalResource() {
+		req.Namespace = corev2.ContextNamespace(ctx)
+	}
+	wrapper, err := storev2.WrapResource(value)
+	if err != nil {
+		return err
+	}
+	return g.Store.GetConfigStore().CreateIfNotExists(ctx, req, wrapper)
 }
 
 // Create creates a resource, if authorized
-func (g *GenericClient) Create(ctx context.Context, value corev2.Resource) error {
+func (g *GenericClient) Create(ctx context.Context, value corev3.Resource) error {
 	if err := g.validateConfig(); err != nil {
 		return err
 	}
 	if err := value.Validate(); err != nil {
 		return err
 	}
-	attrs := &authorization.Attributes{
-		APIGroup:     g.APIGroup,
-		APIVersion:   g.APIVersion,
-		Resource:     g.Kind.RBACName(),
-		Namespace:    corev2.ContextNamespace(ctx),
-		Verb:         "create",
-		ResourceName: value.GetObjectMeta().Name,
-	}
-	if err := authorize(ctx, g.Auth, attrs); err != nil {
+	if err := g.Authorize(ctx, "create", value.GetMetadata().Name); err != nil {
 		return err
 	}
 	setCreatedBy(ctx, value)
@@ -87,52 +95,48 @@ func (g *GenericClient) SetTypeMeta(meta corev2.TypeMeta) error {
 	}
 	g.APIGroup = path.Dir(meta.APIVersion)
 	g.APIVersion = path.Base(meta.APIVersion)
-	kind, err := types.ResolveRaw(meta.APIVersion, meta.Type)
+	kind, err := apitools.Resolve(meta.APIVersion, meta.Type)
 	if err != nil {
 		return fmt.Errorf("error (SetTypeMeta): %s", err)
 	}
 	switch kind := kind.(type) {
-	case corev2.Resource:
-		g.Kind = kind
 	case corev3.Resource:
-		g.Kind = corev3.V3ToV2Resource(kind)
+		g.Kind = kind
 	default:
 		return fmt.Errorf("%T is not a sensu resource", kind)
 	}
 	return nil
 }
 
-func (g *GenericClient) updateResource(ctx context.Context, value corev2.Resource) error {
-	if value, ok := value.(*corev3.V2ResourceProxy); ok {
-		resource := value.Resource
-		req := storev2.NewResourceRequestFromResource(ctx, resource)
-		req.Namespace = corev2.ContextNamespace(ctx)
-		wrapper, err := storev2.WrapResource(resource)
-		if err != nil {
-			return err
-		}
-		return g.StoreV2.CreateOrUpdate(req, wrapper)
+func (g *GenericClient) updateResource(ctx context.Context, value corev3.Resource) error {
+	switch value := value.(type) {
+	case *corev3.EntityConfig:
+		return g.Store.GetEntityConfigStore().CreateOrUpdate(ctx, value)
+	case *corev3.EntityState:
+		return g.Store.GetEntityStateStore().CreateOrUpdate(ctx, value)
+	case *corev3.Namespace:
+		return g.Store.GetNamespaceStore().CreateOrUpdate(ctx, value)
 	}
-	return g.Store.CreateOrUpdateResource(ctx, value)
+	req := storev2.NewResourceRequestFromResource(value)
+	if gr, ok := g.Kind.(corev3.GlobalResource); !ok || !gr.IsGlobalResource() {
+		req.Namespace = corev2.ContextNamespace(ctx)
+	}
+	wrapper, err := storev2.WrapResource(value)
+	if err != nil {
+		return err
+	}
+	return g.Store.GetConfigStore().CreateOrUpdate(ctx, req, wrapper)
 }
 
 // Update creates or updates a resource, if authorized
-func (g *GenericClient) Update(ctx context.Context, value corev2.Resource) error {
+func (g *GenericClient) Update(ctx context.Context, value corev3.Resource) error {
 	if err := g.validateConfig(); err != nil {
 		return err
 	}
 	if err := value.Validate(); err != nil {
 		return err
 	}
-	attrs := &authorization.Attributes{
-		APIGroup:     g.APIGroup,
-		APIVersion:   g.APIVersion,
-		Resource:     g.Kind.RBACName(),
-		Namespace:    corev2.ContextNamespace(ctx),
-		Verb:         "update",
-		ResourceName: value.GetObjectMeta().Name,
-	}
-	if err := authorize(ctx, g.Auth, attrs); err != nil {
+	if err := g.Authorize(ctx, "update", value.GetMetadata().Name); err != nil {
 		return err
 	}
 	setCreatedBy(ctx, value)
@@ -140,16 +144,20 @@ func (g *GenericClient) Update(ctx context.Context, value corev2.Resource) error
 }
 
 func (g *GenericClient) deleteResource(ctx context.Context, name string) error {
-	if _, ok := g.Kind.(*corev3.V2ResourceProxy); ok {
-		req := storev2.ResourceRequest{
-			Namespace: corev2.ContextNamespace(ctx),
-			Name:      name,
-			StoreName: g.Kind.StorePrefix(),
-			Context:   ctx,
-		}
-		return g.StoreV2.Delete(req)
+	req := storev2.NewResourceRequestFromResource(g.Kind)
+	if gr, ok := g.Kind.(corev3.GlobalResource); !ok || !gr.IsGlobalResource() {
+		req.Namespace = corev2.ContextNamespace(ctx)
 	}
-	return g.Store.DeleteResource(ctx, g.Kind.StorePrefix(), name)
+	req.Name = name
+	switch g.Kind.(type) {
+	case *corev3.EntityConfig:
+		return g.Store.GetEntityConfigStore().Delete(ctx, req.Namespace, req.Name)
+	case *corev3.EntityState:
+		return g.Store.GetEntityStateStore().Delete(ctx, req.Namespace, req.Name)
+	case *corev3.Namespace:
+		return g.Store.GetNamespaceStore().Delete(ctx, req.Name)
+	}
+	return g.Store.GetConfigStore().Delete(ctx, req)
 }
 
 // Delete deletes a resource, if authorized
@@ -157,82 +165,149 @@ func (g *GenericClient) Delete(ctx context.Context, name string) error {
 	if err := g.validateConfig(); err != nil {
 		return err
 	}
-	attrs := &authorization.Attributes{
-		APIGroup:     g.APIGroup,
-		APIVersion:   g.APIVersion,
-		Resource:     g.Kind.RBACName(),
-		Namespace:    corev2.ContextNamespace(ctx),
-		Verb:         "delete",
-		ResourceName: name,
-	}
-	if err := authorize(ctx, g.Auth, attrs); err != nil {
+	if err := g.Authorize(ctx, "delete", name); err != nil {
 		return err
 	}
 	return g.deleteResource(ctx, name)
 }
 
-func (g *GenericClient) getResource(ctx context.Context, name string, value corev2.Resource) error {
-	if value, ok := value.(*corev3.V2ResourceProxy); ok {
-		req := storev2.ResourceRequest{
-			Namespace: corev2.ContextNamespace(ctx),
-			Name:      name,
-			StoreName: value.StorePrefix(),
-			Context:   ctx,
-		}
-		wrapper, err := g.StoreV2.Get(req)
-		if err != nil {
-			return err
-		}
-		return wrapper.UnwrapInto(value.Resource)
+func (g *GenericClient) getResource(ctx context.Context, name string, value corev3.Resource) error {
+	req := storev2.NewResourceRequestFromResource(g.Kind)
+	if gr, ok := g.Kind.(corev3.GlobalResource); !ok || !gr.IsGlobalResource() {
+		req.Namespace = corev2.ContextNamespace(ctx)
 	}
-	return g.Store.GetResource(ctx, name, value)
+	req.Name = name
+	switch value := value.(type) {
+	case *corev3.EntityConfig:
+		val, err := g.Store.GetEntityConfigStore().Get(ctx, req.Namespace, req.Name)
+		if err == nil {
+			*value = *val
+		}
+		return err
+	case *corev3.EntityState:
+		val, err := g.Store.GetEntityStateStore().Get(ctx, req.Namespace, req.Name)
+		if err == nil {
+			*value = *val
+		}
+		return err
+	case *corev3.Namespace:
+		val, err := g.Store.GetNamespaceStore().Get(ctx, req.Name)
+		if err == nil {
+			*value = *val
+		}
+		return err
+	}
+	wrapper, err := g.Store.GetConfigStore().Get(ctx, req)
+	if err != nil {
+		return err
+	}
+	if err := wrapper.UnwrapInto(value); err != nil {
+		return err
+	}
+	if redacter, ok := value.(corev3.Redacter); ok {
+		redacter.ProduceRedacted()
+	}
+	return err
 }
 
 // Get gets a resource, if authorized
-func (g *GenericClient) Get(ctx context.Context, name string, val corev2.Resource) error {
+func (g *GenericClient) Get(ctx context.Context, name string, val corev3.Resource) error {
 	if err := g.validateConfig(); err != nil {
 		return err
 	}
-	attrs := &authorization.Attributes{
-		APIGroup:     g.APIGroup,
-		APIVersion:   g.APIVersion,
-		Resource:     g.Kind.RBACName(),
-		Namespace:    corev2.ContextNamespace(ctx),
-		Verb:         "get",
-		ResourceName: name,
-	}
-	if err := authorize(ctx, g.Auth, attrs); err != nil {
+	if err := g.Authorize(ctx, "get", name); err != nil {
 		return err
 	}
 	return g.getResource(ctx, name, val)
 }
 
 func (g *GenericClient) list(ctx context.Context, resources interface{}, pred *store.SelectionPredicate) error {
-	if _, ok := g.Kind.(*corev3.V2ResourceProxy); ok {
-		req := storev2.ResourceRequest{
-			Namespace: corev2.ContextNamespace(ctx),
-			StoreName: g.Kind.StorePrefix(),
-			Context:   ctx,
+	req := storev2.NewResourceRequestFromResource(g.Kind)
+	if gr, ok := g.Kind.(corev3.GlobalResource); !ok || !gr.IsGlobalResource() {
+		req.Namespace = corev2.ContextNamespace(ctx)
+	}
+	if pred != nil && pred.Ordering == "NAME" {
+		req.SortOrder = storev2.SortAscend
+		if pred.Descending {
+			req.SortOrder = storev2.SortDescend
 		}
-		list, err := g.StoreV2.List(req, pred)
+	}
+	switch g.Kind.(type) {
+	case *corev3.EntityConfig:
+		list, err := g.Store.GetEntityConfigStore().List(ctx, req.Namespace, pred)
 		if err != nil {
 			return err
 		}
-		if resourceList, ok := resources.(*[]corev2.Resource); ok {
-			values, err := list.Unwrap()
-			if err != nil {
-				return err
+		switch resources := resources.(type) {
+		case *[]corev3.EntityConfig:
+			for _, v := range list {
+				*resources = append(*resources, *v)
 			}
-			v2values := make([]corev2.Resource, len(values))
-			for i := range values {
-				v2values[i] = corev3.V3ToV2Resource(values[i])
+		case *[]*corev3.EntityConfig:
+			*resources = append(*resources, list...)
+		case *[]corev3.Resource:
+			for _, v := range list {
+				*resources = append(*resources, v)
 			}
-			*resourceList = v2values
-			return nil
 		}
-		return list.UnwrapInto(resources)
+		return nil
+	case *corev3.EntityState:
+		list, err := g.Store.GetEntityStateStore().List(ctx, req.Namespace, pred)
+		if err != nil {
+			return err
+		}
+		switch resources := resources.(type) {
+		case *[]corev3.EntityState:
+			for _, v := range list {
+				*resources = append(*resources, *v)
+			}
+		case *[]*corev3.EntityState:
+			for _, v := range list {
+				*resources = append(*resources, v)
+			}
+		case *[]corev3.Resource:
+			for _, v := range list {
+				*resources = append(*resources, v)
+			}
+		}
+		return nil
+	case *corev3.Namespace:
+		list, err := g.Store.GetNamespaceStore().List(ctx, pred)
+		if err != nil {
+			return err
+		}
+		switch resources := resources.(type) {
+		case *[]corev3.Namespace:
+			for _, v := range list {
+				*resources = append(*resources, *v)
+			}
+		case *[]*corev3.Namespace:
+			for _, v := range list {
+				*resources = append(*resources, v)
+			}
+		case *[]corev3.Resource:
+			for _, v := range list {
+				*resources = append(*resources, v)
+			}
+		}
+		return nil
 	}
-	return g.Store.ListResources(ctx, g.Kind.StorePrefix(), resources, pred)
+	list, err := g.Store.GetConfigStore().List(ctx, req, pred)
+	if err != nil {
+		return err
+	}
+
+	if err := list.UnwrapInto(resources); err != nil {
+		return err
+	}
+	if v3Resources, ok := resources.(*[]corev3.Resource); ok {
+		for i, resource := range *v3Resources {
+			if redacter, ok := resource.(corev3.Redacter); ok {
+				(*v3Resources)[i] = redacter.ProduceRedacted()
+			}
+		}
+	}
+	return nil
 }
 
 // List lists all resources within a namespace, according to a selection
@@ -241,15 +316,25 @@ func (g *GenericClient) List(ctx context.Context, resources interface{}, pred *s
 	if err := g.validateConfig(); err != nil {
 		return err
 	}
+	if err := g.Authorize(ctx, "list", ""); err != nil {
+		return err
+	}
+	return g.list(ctx, resources, pred)
+}
+
+// Authorize tests whether or not the current user can perform an action.
+// Returns nil if action is allow and otherwise an auth error.
+func (g *GenericClient) Authorize(ctx context.Context, verb RBACVerb, name string) error {
 	attrs := &authorization.Attributes{
-		APIGroup:   g.APIGroup,
-		APIVersion: g.APIVersion,
-		Resource:   g.Kind.RBACName(),
-		Namespace:  corev2.ContextNamespace(ctx),
-		Verb:       "list",
+		APIGroup:     g.APIGroup,
+		APIVersion:   g.APIVersion,
+		Namespace:    corev2.ContextNamespace(ctx),
+		Resource:     g.Kind.RBACName(),
+		ResourceName: name,
+		Verb:         string(verb),
 	}
 	if err := authorize(ctx, g.Auth, attrs); err != nil {
 		return err
 	}
-	return g.list(ctx, resources, pred)
+	return nil
 }

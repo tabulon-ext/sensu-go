@@ -4,25 +4,29 @@ import (
 	"errors"
 	"strings"
 
-	v2 "github.com/sensu/sensu-go/api/core/v2"
+	corev3 "github.com/sensu/core/v3"
 )
 
 var (
-	// KeylessStatementErr statement is missing a key
-	KeylessStatementErr = errors.New("filters must have the format KEY:VAL")
+	// ErrKeylessStatement is returned when a statement is missing a key
+	ErrKeylessStatement = errors.New("filters must have the format KEY:VAL")
+	// DEPRECATED: use ErrKeylessStatement
+	KeylessStatementErr = ErrKeylessStatement
 
-	// FilterNotFoundErr could not match a filter for the given key
-	FilterNotFoundErr = errors.New("no filter could be matched with the given statement")
+	// ErrFilterNotFound is returned when a filter is not found for a given key
+	ErrFilterNotFound = errors.New("no filter could be matched with the given statement")
+	// DEPRECATED: use ErrFilterNotFound
+	FilterNotFoundErr = ErrFilterNotFound
 )
 
 // Match a given resource
-type Matcher func(v2.Resource) bool
+type Matcher func(corev3.Resource) bool
 
 // Filter configures a new Matcher given a statement and a fields func.
 type Filter func(string, FieldsFunc) (Matcher, error)
 
 // FieldsFunc represents the function to retrieve fields about a given resource
-type FieldsFunc func(resource v2.Resource) map[string]string
+type FieldsFunc func(resource corev3.Resource) map[string]string
 
 const (
 	// separator character used to separate the key and value
@@ -35,12 +39,12 @@ func Compile(statements []string, filters map[string]Filter, fieldsFn FieldsFunc
 	for _, s := range statements {
 		ss := strings.SplitN(s, statementSeparator, 2)
 		if len(ss) != 2 {
-			return nil, KeylessStatementErr
+			return nil, ErrKeylessStatement
 		}
 		k, v := ss[0], ss[1]
 		f, ok := filters[k]
 		if !ok {
-			return nil, FilterNotFoundErr
+			return nil, ErrFilterNotFound
 		}
 		matcher, err := f(v, fieldsFn)
 		if err != nil {
@@ -49,7 +53,7 @@ func Compile(statements []string, filters map[string]Filter, fieldsFn FieldsFunc
 		matchers = append(matchers, matcher)
 	}
 
-	return func(res v2.Resource) bool {
+	return func(res corev3.Resource) bool {
 		for _, matches := range matchers {
 			if !matches(res) {
 				return false

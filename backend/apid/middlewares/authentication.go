@@ -2,14 +2,15 @@ package middlewares
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"net/http"
 	"strings"
 
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	corev2 "github.com/sensu/core/v2"
 	"github.com/sensu/sensu-go/backend/apid/actions"
+	"github.com/sensu/sensu-go/backend/authentication/bcrypt"
 	"github.com/sensu/sensu-go/backend/authentication/jwt"
-	"github.com/sensu/sensu-go/backend/store"
+	storev2 "github.com/sensu/sensu-go/backend/store/v2"
 )
 
 // Authentication is a HTTP middleware that enforces authentication
@@ -17,7 +18,7 @@ type Authentication struct {
 	// IgnoreUnauthorized configures the middleware to continue the handler chain
 	// in the case where an access token was not present.
 	IgnoreUnauthorized bool
-	Store              store.Store
+	Store              storev2.Interface
 }
 
 // Then middleware
@@ -74,38 +75,34 @@ func (a Authentication) Then(next http.Handler) http.Handler {
 	})
 }
 
-func extractAPIKeyClaims(ctx context.Context, key string, store store.Store) (*corev2.Claims, error) {
+func extractAPIKeyClaims(ctx context.Context, key string, store storev2.Interface) (*corev2.Claims, error) {
 	var claims *corev2.Claims
-	// retrieve the APIKey based on the key provided
-	apiKey := &corev2.APIKey{
-		ObjectMeta: corev2.ObjectMeta{
-			Name: key,
-		},
-	}
-	if err := store.GetResource(context.Background(), apiKey.Name, apiKey); err != nil {
-		return claims, err
-	}
-
-	// retrieve the sensu user associated with the key provided
-	user, err := store.GetUser(ctx, apiKey.Username)
+	keyStore := storev2.Of[*corev2.APIKey](store)
+	apiKeys, err := keyStore.List(ctx, storev2.ID{}, nil)
 	if err != nil {
-		return claims, err
-	}
-	// this shouldn't happen because user validation happens at key generation,
-	// but in the event a user is deleted after a key has been generated,
-	// the key should not pass authentication
-	if user == nil {
-		return claims, fmt.Errorf("user %s not found", apiKey.Username)
+		return nil, err
 	}
 
-	// inject the username and groups into standard jwt claims
-	claims = &corev2.Claims{
-		StandardClaims: corev2.StandardClaims(user.Username),
-		Groups:         user.Groups,
-		APIKey:         true,
+	for _, apiKey := range apiKeys {
+		if bcrypt.CheckPassword(string(apiKey.Hash), key) {
+			userStore := storev2.Of[*corev2.User](store)
+			user, err := userStore.Get(ctx, storev2.ID{Name: apiKey.Username})
+			if err != nil {
+				return nil, err
+			}
+
+			// inject the username and groups into standard jwt claims
+			claims = &corev2.Claims{
+				StandardClaims: corev2.StandardClaims(user.Username),
+				Groups:         user.Groups,
+				APIKey:         true,
+			}
+
+			return claims, nil
+		}
 	}
 
-	return claims, nil
+	return nil, errors.New("API key rejected")
 }
 
 type errorWriter struct {

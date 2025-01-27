@@ -5,7 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	corev2 "github.com/sensu/core/v2"
+	corev3 "github.com/sensu/core/v3"
 	"github.com/sensu/sensu-go/backend/apid/graphql/schema"
 	"github.com/sensu/sensu-go/backend/store"
 	"github.com/sensu/sensu-go/graphql"
@@ -26,7 +27,7 @@ func TestNamespaceTypeCheckConfigsField(t *testing.T) {
 	params := schema.NamespaceChecksFieldResolverParams{ResolveParams: graphql.ResolveParams{Context: context.Background()}}
 	cfg := ServiceConfig{CheckClient: checkClient}
 	params.Context = contextWithLoadersNoCache(context.Background(), cfg)
-	params.Source = corev2.FixtureNamespace("default")
+	params.Source = corev3.FixtureNamespace("default")
 	params.Args.Limit = 20
 
 	// Success
@@ -43,28 +44,115 @@ func TestNamespaceTypeCheckConfigsField(t *testing.T) {
 
 func TestNamespaceTypeEntitiesField(t *testing.T) {
 	client := new(MockEntityClient)
-	client.On("ListEntities", mock.Anything).Return([]*corev2.Entity{
+	client.On("ListEntities", mock.Anything, mock.Anything).Return([]*corev2.Entity{
 		corev2.FixtureEntity("a"),
 		corev2.FixtureEntity("b"),
 		corev2.FixtureEntity("c"),
-	}, nil).Once()
+	}, nil).Times(2)
 
-	impl := &namespaceImpl{}
 	params := schema.NamespaceEntitiesFieldResolverParams{ResolveParams: graphql.ResolveParams{Context: context.Background()}}
-	cfg := ServiceConfig{EntityClient: client}
-	params.Context = contextWithLoadersNoCache(context.Background(), cfg)
-	params.Source = corev2.FixtureNamespace("default")
-	params.Args.Limit = 20
+	params.Context = context.Background()
+	params.Source = corev3.FixtureNamespace("default")
+	params.Args.Limit = 2
 
 	// Success
-	res, err := impl.Entities(params)
+	resolver := &namespaceImpl{entityClient: client}
+	got, err := resolver.Entities(params)
 	assert.NoError(t, err)
-	assert.NotEmpty(t, res.(offsetContainer).Nodes)
+	assert.NotEmpty(t, got.(offsetContainer).Nodes)
+
+	// Metrics
+	metricsStore := new(MockClusterMetricStore)
+	metricsStore.On("EntityCount", mock.Anything, "total").Return(10, nil)
+	resolver.serviceConfig = &ServiceConfig{ClusterMetricStore: metricsStore}
+	got, err = resolver.Entities(params)
+	assert.NoError(t, err)
+	assert.NotEmpty(t, got.(offsetContainer).Nodes)
+	assert.Equal(t, 10, got.(offsetContainer).PageInfo.totalCount)
+	assert.False(t, got.(offsetContainer).PageInfo.partialCount)
+
+	// Multiple chunks
+	client.On("ListEntities", mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
+		pred := args[1].(*store.SelectionPredicate)
+		pred.Continue = "next"
+	}).Return([]*corev2.Entity{
+		corev2.FixtureEntity("a"),
+		corev2.FixtureEntity("b"),
+		corev2.FixtureEntity("c"),
+		corev2.FixtureEntity("d"),
+		corev2.FixtureEntity("e"),
+	}, nil).Times(100)
+	params.Args.Limit = 20
+	resolver = &namespaceImpl{entityClient: client}
+	got, err = resolver.Entities(params)
+	assert.NoError(t, err)
+	assert.Len(t, got.(offsetContainer).Nodes, 20)
+	assert.Equal(t, 500, got.(offsetContainer).PageInfo.totalCount)
+	assert.Equal(t, true, got.(offsetContainer).PageInfo.partialCount)
+
+	// Finite chunks
+	client.On("ListEntities", mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
+		pred := args[1].(*store.SelectionPredicate)
+		pred.Continue = "next"
+	}).Return([]*corev2.Entity{
+		corev2.FixtureEntity("a"),
+		corev2.FixtureEntity("b"),
+		corev2.FixtureEntity("c"),
+		corev2.FixtureEntity("d"),
+		corev2.FixtureEntity("e"),
+	}, nil).Times(50)
+	client.On("ListEntities", mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
+		pred := args[1].(*store.SelectionPredicate)
+		pred.Continue = ""
+	}).Return([]*corev2.Entity{
+		corev2.FixtureEntity("a"),
+		corev2.FixtureEntity("b"),
+		corev2.FixtureEntity("c"),
+		corev2.FixtureEntity("d"),
+		corev2.FixtureEntity("e"),
+	}, nil).Once()
+	params.Args.Limit = 20
+	resolver = &namespaceImpl{entityClient: client}
+	got, err = resolver.Entities(params)
+	assert.NoError(t, err)
+	assert.Len(t, got.(offsetContainer).Nodes, 20)
+	assert.Equal(t, 255, got.(offsetContainer).PageInfo.totalCount)
+	assert.Equal(t, false, got.(offsetContainer).PageInfo.partialCount)
+
+	// w/ offset
+	client.On("ListEntities", mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
+		pred := args[1].(*store.SelectionPredicate)
+		pred.Continue = "next"
+	}).Return([]*corev2.Entity{
+		corev2.FixtureEntity("a"),
+		corev2.FixtureEntity("b"),
+		corev2.FixtureEntity("c"),
+		corev2.FixtureEntity("d"),
+		corev2.FixtureEntity("e"),
+	}, nil).Times(50)
+	client.On("ListEntities", mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
+		pred := args[1].(*store.SelectionPredicate)
+		pred.Continue = ""
+	}).Return([]*corev2.Entity{
+		corev2.FixtureEntity("a"),
+		corev2.FixtureEntity("b"),
+		corev2.FixtureEntity("c"),
+		corev2.FixtureEntity("d"),
+		corev2.FixtureEntity("e"),
+	}, nil).Once()
+	params.Args.Limit = 20
+	params.Args.Offset = 250
+	resolver = &namespaceImpl{entityClient: client}
+	got, err = resolver.Entities(params)
+	assert.NoError(t, err)
+	assert.Len(t, got.(offsetContainer).Nodes, 5)
+	assert.Equal(t, 255, got.(offsetContainer).PageInfo.totalCount)
+	assert.Equal(t, false, got.(offsetContainer).PageInfo.partialCount)
 
 	// Store err
 	client.On("ListEntities", mock.Anything, mock.Anything).Return([]*corev2.Entity{}, errors.New("abc")).Once()
-	res, err = impl.Entities(params)
-	assert.Empty(t, res.(offsetContainer).Nodes)
+	got, err = resolver.Entities(params)
+	assert.Empty(t, got.(offsetContainer).Nodes)
 	assert.Error(t, err)
 }
 
@@ -77,22 +165,21 @@ func TestNamespaceTypeEventsField(t *testing.T) {
 		corev2.FixtureEvent("c", "d"),
 	}, nil).Once()
 
-	impl := &namespaceImpl{eventClient: client}
-	params := schema.NamespaceEventsFieldResolverParams{ResolveParams: graphql.ResolveParams{Context: context.Background()}}
-	cfg := ServiceConfig{EventClient: client}
-	params.Context = contextWithLoadersNoCache(context.Background(), cfg)
-	params.Source = corev2.FixtureNamespace("default")
+	params := schema.NamespaceEventsFieldResolverParams{}
+	params.Context = context.Background()
+	params.Source = corev3.FixtureNamespace("default")
 	params.Args.Limit = 20
 
 	// Success
-	res, err := impl.Events(params)
+	resolver := &namespaceImpl{eventClient: client}
+	got, err := resolver.Events(params)
 	assert.NoError(t, err)
-	assert.NotEmpty(t, res.(offsetContainer).Nodes)
+	assert.NotEmpty(t, got.(offsetContainer).Nodes)
 
 	// Store err
 	client.On("ListEvents", mock.Anything, mock.Anything).Return([]*corev2.Event{}, errors.New("abc")).Once()
-	res, err = impl.Events(params)
-	assert.Empty(t, res.(offsetContainer).Nodes)
+	got, err = resolver.Events(params)
+	assert.Empty(t, got.(offsetContainer).Nodes)
 	assert.Error(t, err)
 }
 
@@ -213,7 +300,7 @@ func TestNamespaceTypeEventsFieldWithStoreFiltering(t *testing.T) {
 				Args:          tc.args,
 			}
 			params.Context = context.Background()
-			params.Source = corev2.FixtureNamespace("default")
+			params.Source = corev3.FixtureNamespace("default")
 
 			res, err := impl.Events(params)
 
@@ -246,7 +333,7 @@ func TestNamespaceTypeEventFiltersField(t *testing.T) {
 	params := schema.NamespaceEventFiltersFieldResolverParams{ResolveParams: graphql.ResolveParams{Context: context.Background()}}
 	cfg := ServiceConfig{EventFilterClient: client}
 	params.Context = contextWithLoadersNoCache(context.Background(), cfg)
-	params.Source = corev2.FixtureNamespace("default")
+	params.Source = corev3.FixtureNamespace("default")
 	params.Args.Limit = 20
 
 	// Success
@@ -274,7 +361,7 @@ func TestNamespaceTypeHandlersField(t *testing.T) {
 	params := schema.NamespaceHandlersFieldResolverParams{ResolveParams: graphql.ResolveParams{Context: context.Background()}}
 	cfg := ServiceConfig{HandlerClient: client}
 	params.Context = contextWithLoadersNoCache(context.Background(), cfg)
-	params.Source = corev2.FixtureNamespace("default")
+	params.Source = corev3.FixtureNamespace("default")
 	params.Args.Limit = 10
 
 	// Success
@@ -306,7 +393,7 @@ func TestNamespaceTypeMutatorsField(t *testing.T) {
 	params := schema.NamespaceMutatorsFieldResolverParams{ResolveParams: graphql.ResolveParams{Context: context.Background()}}
 	cfg := ServiceConfig{MutatorClient: client}
 	params.Context = contextWithLoadersNoCache(context.Background(), cfg)
-	params.Source = corev2.FixtureNamespace("default")
+	params.Source = corev3.FixtureNamespace("default")
 	params.Args.Limit = 10
 
 	// Success
@@ -337,7 +424,7 @@ func TestNamespaceTypeSilencesField(t *testing.T) {
 	cfg := ServiceConfig{SilencedClient: client}
 	params := schema.NamespaceSilencesFieldResolverParams{ResolveParams: graphql.ResolveParams{Context: context.Background()}}
 	params.Context = contextWithLoadersNoCache(context.Background(), cfg)
-	params.Source = corev2.FixtureNamespace("xxx")
+	params.Source = corev3.FixtureNamespace("xxx")
 
 	// Success
 	res, err := impl.Silences(params)

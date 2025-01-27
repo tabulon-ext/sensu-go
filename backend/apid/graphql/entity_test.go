@@ -2,11 +2,11 @@ package graphql
 
 import (
 	"context"
+	"math"
 	"testing"
 	"time"
 
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
-	v2 "github.com/sensu/sensu-go/api/core/v2"
+	corev2 "github.com/sensu/core/v2"
 	"github.com/sensu/sensu-go/backend/apid/graphql/schema"
 	"github.com/sensu/sensu-go/graphql"
 	"github.com/stretchr/testify/assert"
@@ -21,14 +21,14 @@ func TestEntityTypeMetadataField(t *testing.T) {
 	res, err := impl.Metadata(graphql.ResolveParams{Source: src, Context: context.Background()})
 	require.NoError(t, err)
 	assert.NotEmpty(t, res)
-	assert.IsType(t, v2.ObjectMeta{}, res)
+	assert.IsType(t, corev2.ObjectMeta{}, res)
 }
 
 func TestEntityTypeRelatedField(t *testing.T) {
 	source := corev2.FixtureEntity("c")
 
 	client := new(MockEntityClient)
-	client.On("ListEntities", mock.Anything).Return([]*corev2.Entity{
+	client.On("ListEntities", mock.Anything, mock.Anything).Return([]*corev2.Entity{
 		source,
 		corev2.FixtureEntity("a"),
 		corev2.FixtureEntity("b"),
@@ -79,10 +79,22 @@ func TestEntityTypeStatusField(t *testing.T) {
 	}, nil).Once()
 
 	// exit status: 2
-	// params.Context = contextWithLoaders(context.Background(), client)
 	st, err = impl.Status(params)
 	require.NoError(t, err)
 	assert.EqualValues(t, 2, st)
+
+	// event with status > math.MaxInt32
+	highStatusEv := corev2.FixtureEvent(entity.Name, "bad")
+	highStatusEv.Check.Status = math.MaxInt32 + 12
+	client.On("ListEventsByEntity", mock.Anything, entity.Name, mock.Anything).Return([]*corev2.Event{
+		corev2.FixtureEvent(entity.Name, "a"),
+		highStatusEv,
+	}, nil).Once()
+
+	// exit status: 2
+	st, err = impl.Status(params)
+	require.NoError(t, err)
+	assert.EqualValues(t, math.MaxInt32, st)
 }
 
 func TestEntityTypeLastSeenField(t *testing.T) {

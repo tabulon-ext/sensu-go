@@ -3,22 +3,13 @@ package backend
 import (
 	"time"
 
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
-	"github.com/sensu/sensu-go/backend/etcd"
+	corev2 "github.com/sensu/core/v2"
 	"github.com/sensu/sensu-go/backend/licensing"
+	"github.com/sensu/sensu-go/backend/store/postgres"
 	"golang.org/x/time/rate"
 )
 
 const (
-	// DefaultEtcdName is the default etcd member node name (single-node cluster only)
-	DefaultEtcdName = "default"
-
-	// DefaultEtcdClientURL is the default URL to listen for Etcd clients
-	DefaultEtcdClientURL = "http://127.0.0.1:2379"
-
-	// DefaultEtcdPeerURL is the default URL to listen for Etcd peers (single-node cluster only)
-	DefaultEtcdPeerURL = "http://127.0.0.1:2380"
-
 	// FlagEventdWorkers defines the number of workers for eventd
 	FlagEventdWorkers = "eventd-workers"
 	// FlagEventdBufferSize defines the buffer size for eventd
@@ -44,11 +35,17 @@ const (
 	FlagJWTPublicKeyFile = "jwt-public-key-file"
 )
 
+type StoreConfig struct {
+	// PostgresStore contains postgres configuration store details.
+	PostgresStore postgres.Config
+}
+
 // Config specifies a Backend configuration.
 type Config struct {
 	// Backend Configuration
 	StateDir string
 	CacheDir string
+	Name     string
 
 	// Agentd Configuration
 	AgentHost         string
@@ -84,36 +81,9 @@ type Config struct {
 	// Annotations are key-value pairs that users can provide to backend entities
 	Annotations map[string]string
 
-	// Etcd configuration
-	EtcdAdvertiseClientURLs      []string
-	EtcdInitialAdvertisePeerURLs []string
-	EtcdInitialClusterToken      string
-	EtcdInitialClusterState      string
-	EtcdInitialCluster           string
-	EtcdClientURLs               []string
-	EtcdListenClientURLs         []string
-	EtcdListenPeerURLs           []string
-	EtcdName                     string
-	NoEmbedEtcd                  bool
-	EtcdHeartbeatInterval        uint
-	EtcdElectionTimeout          uint
-	EtcdDiscovery                string
-	EtcdDiscoverySrv             string
-	EtcdUseEmbeddedClient        bool
-	EtcdClientUsername           string
-	EtcdClientPassword           string
-
-	// Etcd TLS configuration
-	EtcdClientTLSInfo     etcd.TLSInfo
-	EtcdPeerTLSInfo       etcd.TLSInfo
-	EtcdCipherSuites      []string
-	EtcdMaxRequestBytes   uint
-	EtcdQuotaBackendBytes int64
-
 	TLS *corev2.TLSOptions
 
-	LogLevel     string
-	EtcdLogLevel string
+	LogLevel string
 
 	LicenseGetter licensing.Getter
 
@@ -125,4 +95,6 @@ type Config struct {
 	EventLogBufferWait       time.Duration
 	EventLogFile             string
 	EventLogParallelEncoders bool
+
+	Store StoreConfig
 }

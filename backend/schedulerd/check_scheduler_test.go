@@ -7,21 +7,21 @@ import (
 	"testing"
 	"time"
 
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
-	"github.com/sensu/sensu-go/backend/messaging"
-	"github.com/sensu/sensu-go/backend/queue"
-	"github.com/sensu/sensu-go/backend/secrets"
-	"github.com/sensu/sensu-go/backend/store"
-	cachev2 "github.com/sensu/sensu-go/backend/store/cache/v2"
-	"github.com/sensu/sensu-go/testing/mockstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+
+	corev2 "github.com/sensu/core/v2"
+	corev3 "github.com/sensu/core/v3"
+	"github.com/sensu/sensu-go/backend/messaging"
+	"github.com/sensu/sensu-go/backend/secrets"
+	cachev2 "github.com/sensu/sensu-go/backend/store/cache/v2"
+	"github.com/sensu/sensu-go/testing/mockstore"
 )
 
 type TestIntervalScheduler struct {
 	check     *corev2.CheckConfig
-	exec      Executor
+	exec      *CheckExecutor
 	msgBus    *messaging.WizardBus
 	scheduler *IntervalScheduler
 	channel   chan interface{}
@@ -33,7 +33,7 @@ func (tcs *TestIntervalScheduler) Receiver() chan<- interface{} {
 
 type TestCronScheduler struct {
 	check     *corev2.CheckConfig
-	exec      Executor
+	exec      *CheckExecutor
 	msgBus    *messaging.WizardBus
 	scheduler *CronScheduler
 	channel   chan interface{}
@@ -41,6 +41,15 @@ type TestCronScheduler struct {
 
 func (tcs *TestCronScheduler) Receiver() chan<- interface{} {
 	return tcs.channel
+}
+
+type mockEventReceiver struct {
+	mock.Mock
+}
+
+func (m *mockEventReceiver) GenerateBackendEvent(component string, status uint32, output string) error {
+	args := m.Called(component, status, output)
+	return args.Error(0)
 }
 
 func newIntervalScheduler(ctx context.Context, t *testing.T, executor string) *TestIntervalScheduler {
@@ -56,26 +65,33 @@ func newIntervalScheduler(ctx context.Context, t *testing.T, executor string) *T
 	hook := request.Hooks[0]
 	scheduler.check = request.Config
 	scheduler.check.Interval = 1
-	s := &mockstore.MockStore{}
-	s.On("GetAssets", mock.Anything, &store.SelectionPredicate{}).Return([]*corev2.Asset{&asset}, nil)
-	s.On("GetHookConfigs", mock.Anything, &store.SelectionPredicate{}).Return([]*corev2.HookConfig{&hook}, nil)
-	s.On("GetCheckConfigByName", mock.Anything, mock.Anything).Return(scheduler.check, nil)
+	es := &mockstore.EntityConfigStore{}
+	es.On("List", mock.Anything, mock.Anything, mock.Anything).Return([]*corev3.EntityConfig{}, nil)
+	cs := &mockstore.ConfigStore{}
+	cs.On("List", mock.Anything, mock.MatchedBy(isAssetResourceRequest), mock.Anything).
+		Return(mockstore.WrapList[*corev2.Asset]{&asset}, nil)
+
+	cs.On("List", mock.Anything, mock.MatchedBy(isHookResourceRequest), mock.Anything).
+		Return(mockstore.WrapList[*corev2.HookConfig]{&hook}, nil)
+
+	s := &mockstore.V2MockStore{}
+	s.On("GetConfigStore").Return(cs)
+	s.On("GetEntityConfigStore").Return(es)
 
 	bus, err := messaging.NewWizardBus(messaging.WizardBusConfig{})
 	require.NoError(t, err)
 	scheduler.msgBus = bus
-	pm := secrets.NewProviderManager()
+	pm := secrets.NewProviderManager(&mockEventReceiver{})
 
-	scheduler.scheduler = NewIntervalScheduler(ctx, s, scheduler.msgBus, scheduler.check, &cachev2.Resource{}, pm)
+	cache, err := cachev2.New[*corev3.EntityConfig](ctx, s, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec := NewCheckExecutor(scheduler.msgBus, s, cache, pm)
+	scheduler.scheduler = NewIntervalScheduler(ctx, scheduler.check, exec)
+	scheduler.exec = exec
 
 	assert.NoError(scheduler.msgBus.Start())
-
-	switch executor {
-	case "adhoc":
-		scheduler.exec = NewAdhocRequestExecutor(ctx, s, &queue.Memory{}, scheduler.msgBus, &cachev2.Resource{}, pm)
-	default:
-		scheduler.exec = NewCheckExecutor(scheduler.msgBus, "default", s, &cachev2.Resource{}, pm)
-	}
 
 	return scheduler
 }
@@ -92,28 +108,35 @@ func newCronScheduler(ctx context.Context, t *testing.T, executor string) *TestC
 	asset := request.Assets[0]
 	hook := request.Hooks[0]
 	scheduler.check = request.Config
-	scheduler.check.Interval = 1
+	scheduler.check.Interval = 0
 	scheduler.check.Cron = "* * * * *"
-	s := &mockstore.MockStore{}
-	s.On("GetAssets", mock.Anything, &store.SelectionPredicate{}).Return([]*corev2.Asset{&asset}, nil)
-	s.On("GetHookConfigs", mock.Anything, &store.SelectionPredicate{}).Return([]*corev2.HookConfig{&hook}, nil)
-	s.On("GetCheckConfigByName", mock.Anything, mock.Anything).Return(scheduler.check, nil)
+	es := &mockstore.EntityConfigStore{}
+	es.On("List", mock.Anything, mock.Anything, mock.Anything).Return([]*corev3.EntityConfig{}, nil)
+	cs := &mockstore.ConfigStore{}
+	cs.On("List", mock.Anything, mock.MatchedBy(isAssetResourceRequest), mock.Anything).
+		Return(mockstore.WrapList[*corev2.Asset]{&asset}, nil)
 
+	cs.On("List", mock.Anything, mock.MatchedBy(isHookResourceRequest), mock.Anything).
+		Return(mockstore.WrapList[*corev2.HookConfig]{&hook}, nil)
+
+	s := &mockstore.V2MockStore{}
+	s.On("GetConfigStore").Return(cs)
+	s.On("GetEntityConfigStore").Return(es)
 	bus, err := messaging.NewWizardBus(messaging.WizardBusConfig{})
 	require.NoError(t, err)
 	scheduler.msgBus = bus
-	pm := secrets.NewProviderManager()
+	pm := secrets.NewProviderManager(&mockEventReceiver{})
 
-	scheduler.scheduler = NewCronScheduler(ctx, s, scheduler.msgBus, scheduler.check, &cachev2.Resource{}, pm)
+	cache, err := cachev2.New[*corev3.EntityConfig](ctx, s, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec := NewCheckExecutor(scheduler.msgBus, s, cache, pm)
+	scheduler.scheduler = NewCronScheduler(ctx, scheduler.check, exec)
 
 	assert.NoError(scheduler.msgBus.Start())
 
-	switch executor {
-	case "adhoc":
-		scheduler.exec = NewAdhocRequestExecutor(ctx, s, &queue.Memory{}, scheduler.msgBus, &cachev2.Resource{}, pm)
-	default:
-		scheduler.exec = NewCheckExecutor(scheduler.msgBus, "default", s, &cachev2.Resource{}, pm)
-	}
+	scheduler.exec = NewCheckExecutor(scheduler.msgBus, s, cache, pm)
 
 	return scheduler
 }
@@ -167,20 +190,18 @@ func TestCheckSubdueInterval(t *testing.T) {
 	scheduler := newIntervalScheduler(ctx, t, "check")
 
 	// Set interval to smallest valid value
+	mockTime.Set(time.Date(2022, time.April, 6, 1, 0, 0, 0, time.UTC))
 	check := scheduler.check
 	check.Subscriptions = []string{"subscription1"}
-	check.Subdue = &corev2.TimeWindowWhen{
-		Days: corev2.TimeWindowDays{
-			All: []*corev2.TimeWindowTimeRange{
-				{
-					Begin: "1:00 AM",
-					End:   "11:00 PM",
-				},
-				{
-					Begin: "10:00 PM",
-					End:   "2:00 AM",
-				},
-			},
+	check.Subdues = []*corev2.TimeWindowRepeated{
+		{
+			Begin:  "2022-04-06T01:00:00-0400",
+			End:    "2022-04-06T23:00:00-0400",
+			Repeat: []string{corev2.RepeatPeriodDaily},
+		}, {
+			Begin:  "2022-04-06T22:00:00-0400",
+			End:    "2022-04-07T02:00:00-0400",
+			Repeat: []string{corev2.RepeatPeriodDaily},
 		},
 	}
 
@@ -264,18 +285,15 @@ func TestCheckSubdueCron(t *testing.T) {
 	check := scheduler.check
 	check.Cron = "* * * * *"
 	check.Subscriptions = []string{"subscription1"}
-	check.Subdue = &corev2.TimeWindowWhen{
-		Days: corev2.TimeWindowDays{
-			All: []*corev2.TimeWindowTimeRange{
-				{
-					Begin: "1:00 AM",
-					End:   "11:00 PM",
-				},
-				{
-					Begin: "10:00 PM",
-					End:   "2:00 AM",
-				},
-			},
+	check.Subdues = []*corev2.TimeWindowRepeated{
+		{
+			Begin:  "2022-04-06T01:00:00-0400",
+			End:    "2022-04-06T23:00:00-0400",
+			Repeat: []string{corev2.RepeatPeriodDaily},
+		}, {
+			Begin:  "2022-04-06T22:00:00-0400",
+			End:    "2022-04-07T02:00:00-0400",
+			Repeat: []string{corev2.RepeatPeriodDaily},
 		},
 	}
 

@@ -6,8 +6,8 @@ import (
 
 	"github.com/sirupsen/logrus"
 
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
-	corev3 "github.com/sensu/sensu-go/api/core/v3"
+	corev2 "github.com/sensu/core/v2"
+	corev3 "github.com/sensu/core/v3"
 	"github.com/sensu/sensu-go/backend/authorization"
 	"github.com/sensu/sensu-go/backend/store"
 	storev2 "github.com/sensu/sensu-go/backend/store/v2"
@@ -15,19 +15,19 @@ import (
 
 // EntityClient is an API client for entities.
 type EntityClient struct {
-	storev2     storev2.Interface
 	entityStore store.EntityStore
 	eventStore  store.EventStore
+	store       storev2.Interface
 	auth        authorization.Authorizer
 }
 
 // NewEntityClient creates a new EntityClient given a store, an event store and
 // an authorizer.
-func NewEntityClient(store store.EntityStore, storev2 storev2.Interface, eventStore store.EventStore, auth authorization.Authorizer) *EntityClient {
+func NewEntityClient(store storev2.Interface, auth authorization.Authorizer) *EntityClient {
 	return &EntityClient{
-		storev2:     storev2,
-		entityStore: store,
-		eventStore:  eventStore,
+		entityStore: store.GetEntityStore(),
+		eventStore:  store.GetEventStore(),
+		store:       store,
 		auth:        auth,
 	}
 }
@@ -105,16 +105,8 @@ func (e *EntityClient) UpdateEntity(ctx context.Context, entity *corev2.Entity) 
 		config, _ := corev3.V2EntityToV3(entity)
 		// Ensure per-entity subscription does not get removed
 		config.Subscriptions = corev2.AddEntitySubscription(config.Metadata.Name, config.Subscriptions)
-		req := storev2.NewResourceRequestFromResource(ctx, config)
-
-		wConfig, err := storev2.WrapResource(config)
-		if err != nil {
-			return err
-		}
-
-		if err := e.storev2.CreateOrUpdate(req, wConfig); err != nil {
-			return err
-		}
+		gstore := storev2.Of[*corev3.EntityConfig](e.store)
+		return gstore.CreateOrUpdate(ctx, config)
 	}
 
 	return nil
@@ -134,14 +126,10 @@ func (e *EntityClient) FetchEntity(ctx context.Context, name string) (*corev2.En
 }
 
 // ListEntities lists all entities in a namespace, if authorized.
-func (e *EntityClient) ListEntities(ctx context.Context) ([]*corev2.Entity, error) {
+func (e *EntityClient) ListEntities(ctx context.Context, pred *store.SelectionPredicate) ([]*corev2.Entity, error) {
 	attrs := entityAuthAttributes(ctx, "list", "")
 	if err := authorize(ctx, e.auth, attrs); err != nil {
 		return nil, err
-	}
-	pred := &store.SelectionPredicate{
-		Continue: corev2.PageContinueFromContext(ctx),
-		Limit:    int64(corev2.PageSizeFromContext(ctx)),
 	}
 	slice, err := e.entityStore.GetEntities(ctx, pred)
 	if err != nil {

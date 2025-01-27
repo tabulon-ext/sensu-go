@@ -1,79 +1,18 @@
-// +build integration
-
 package schedulerd
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sync"
 	"testing"
 
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
-	corev3 "github.com/sensu/sensu-go/api/core/v3"
-	"github.com/sensu/sensu-go/backend/messaging"
-	"github.com/sensu/sensu-go/backend/queue"
-	"github.com/sensu/sensu-go/backend/secrets"
-	cachev2 "github.com/sensu/sensu-go/backend/store/cache/v2"
-	"github.com/sensu/sensu-go/backend/store/etcd/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	corev2 "github.com/sensu/core/v2"
+	corev3 "github.com/sensu/core/v3"
+	"github.com/sensu/sensu-go/backend/messaging"
 )
-
-func TestAdhocExecutor(t *testing.T) {
-	store, err := testutil.NewStoreInstance()
-
-	if err != nil {
-		assert.FailNow(t, err.Error())
-	}
-	bus, err := messaging.NewWizardBus(messaging.WizardBusConfig{})
-	require.NoError(t, err)
-	pm := secrets.NewProviderManager()
-	newAdhocExec := NewAdhocRequestExecutor(context.Background(), store, &queue.Memory{}, bus, &cachev2.Resource{}, pm)
-	defer newAdhocExec.Stop()
-	assert.NoError(t, newAdhocExec.bus.Start())
-
-	goodCheck := corev2.FixtureCheckConfig("goodCheck")
-
-	// set labels and annotations to nil to avoid value comparison issues
-	goodCheck.Labels = nil
-	goodCheck.Annotations = nil
-
-	goodCheck.Subscriptions = []string{"subscription1"}
-
-	goodCheckRequest := &corev2.CheckRequest{}
-	goodCheckRequest.Config = goodCheck
-	ch := make(chan interface{}, 1)
-	tsub := testSubscriber{ch}
-
-	topic := messaging.SubscriptionTopic(goodCheck.Namespace, "subscription1")
-	sub, err := bus.Subscribe(topic, "testSubscriber", tsub)
-	if err != nil {
-		assert.FailNow(t, err.Error())
-	}
-
-	defer func() {
-		close(ch)
-		assert.NoError(t, sub.Cancel())
-	}()
-
-	marshaledCheck, err := json.Marshal(goodCheck)
-	if err != nil {
-		assert.FailNow(t, err.Error())
-	}
-
-	if err = newAdhocExec.adhocQueue.Enqueue(context.Background(), string(marshaledCheck)); err != nil {
-		assert.FailNow(t, err.Error())
-	}
-
-	msg := <-ch
-	result, ok := msg.(*corev2.CheckRequest)
-	assert.True(t, ok)
-	assert.EqualValues(t, goodCheckRequest.Config, result.Config)
-	assert.EqualValues(t, goodCheckRequest.Assets, result.Assets)
-	assert.EqualValues(t, goodCheckRequest.Hooks, result.Hooks)
-	assert.True(t, result.Issued > 0, "Issued > 0")
-}
 
 func TestPublishProxyCheckRequest(t *testing.T) {
 	t.Parallel()
@@ -283,42 +222,6 @@ func TestCheckBuildRequestCron(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	scheduler := newCronScheduler(ctx, t, "check")
-
-	check := scheduler.check
-	check.Cron = "* * * * *"
-
-	request, err := scheduler.exec.buildRequest(check)
-	require.NoError(t, err)
-	assert.NotNil(request)
-	assert.NotNil(request.Config)
-	assert.NotNil(request.Assets)
-	assert.NotEmpty(request.Assets)
-	assert.Len(request.Assets, 1)
-	assert.NotNil(request.Hooks)
-	assert.NotEmpty(request.Hooks)
-	assert.Len(request.Hooks, 1)
-
-	check.RuntimeAssets = []string{}
-	check.CheckHooks = []corev2.HookList{}
-	request, err = scheduler.exec.buildRequest(check)
-	require.NoError(t, err)
-	assert.NotNil(request)
-	assert.NotNil(request.Config)
-	assert.Empty(request.Assets)
-	assert.Empty(request.Hooks)
-
-	assert.NoError(scheduler.msgBus.Stop())
-}
-
-func TestCheckBuildRequestAdhoc_GH2201(t *testing.T) {
-	t.Parallel()
-
-	assert := assert.New(t)
-
-	// Start a scheduler
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	scheduler := newIntervalScheduler(ctx, t, "adhoc")
 
 	check := scheduler.check
 	check.Cron = "* * * * *"

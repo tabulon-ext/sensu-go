@@ -7,7 +7,8 @@ import (
 	"strings"
 
 	"github.com/graph-gophers/dataloader"
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	corev2 "github.com/sensu/core/v2"
+	corev3 "github.com/sensu/core/v3"
 	"github.com/sensu/sensu-go/backend/authorization"
 	"github.com/sensu/sensu-go/backend/store"
 )
@@ -26,7 +27,14 @@ const (
 	namespacesLoaderKey
 	silencedsLoaderKey
 
-	loaderPageSize = 1000
+	// chunk size used by dataloader when retrieving resources from the store
+	loaderPageSize = 250
+
+	// the maximum number of records that will be read from the store by the
+	// dataloader; too many puts significant strain on memory.
+	maxLengthEntityDataloader  = 1_000
+	maxLengthEventDataloader   = 1_000
+	maxLengthGenericDataloader = 2_500
 )
 
 var (
@@ -41,7 +49,8 @@ func loadAssetsBatchFn(c AssetClient) dataloader.BatchFunc {
 	return func(ctx context.Context, keys dataloader.Keys) []*dataloader.Result {
 		results := make([]*dataloader.Result, 0, len(keys))
 		for _, key := range keys {
-			ctx = store.NamespaceContext(ctx, key.String())
+			ctx := store.NamespaceContext(ctx, key.String())
+			ctx = context.WithValue(ctx, corev2.PageSizeKey, maxLengthGenericDataloader)
 			records, err := c.ListAssets(ctx)
 			result := &dataloader.Result{Data: records, Error: handleListErr(err)}
 			results = append(results, result)
@@ -72,6 +81,7 @@ func loadCheckConfigsBatchFn(c CheckClient) dataloader.BatchFunc {
 		results := make([]*dataloader.Result, 0, len(keys))
 		for _, key := range keys {
 			ctx := store.NamespaceContext(ctx, key.String())
+			ctx = context.WithValue(ctx, corev2.PageSizeKey, maxLengthGenericDataloader)
 			records, err := c.ListChecks(ctx)
 			result := &dataloader.Result{Data: records, Error: handleListErr(err)}
 			results = append(results, result)
@@ -97,12 +107,27 @@ func loadCheckConfigs(ctx context.Context, ns string) ([]*corev2.CheckConfig, er
 
 // entities
 
+func listEntities(ctx context.Context, c EntityClient, maxSize int) (records []*corev2.Entity, err error) {
+	pred := &store.SelectionPredicate{Continue: "", Limit: int64(loaderPageSize)}
+	for {
+		r, err := c.ListEntities(ctx, pred)
+		if err != nil {
+			return records, err
+		}
+		records = append(records, r...)
+		if pred.Continue == "" || len(r) < loaderPageSize || len(records) >= maxSize {
+			break
+		}
+	}
+	return
+}
+
 func loadEntitiesBatchFn(c EntityClient) dataloader.BatchFunc {
 	return func(ctx context.Context, keys dataloader.Keys) []*dataloader.Result {
 		results := make([]*dataloader.Result, 0, len(keys))
 		for _, key := range keys {
 			ctx := store.NamespaceContext(ctx, key.String())
-			records, err := c.ListEntities(ctx)
+			records, err := listEntities(ctx, c, maxLengthEntityDataloader)
 			result := &dataloader.Result{Data: records, Error: handleListErr(err)}
 			results = append(results, result)
 		}
@@ -145,7 +170,7 @@ func (k *eventCacheKey) Raw() interface{} {
 	return k
 }
 
-func listEvents(ctx context.Context, c EventClient, entity string) ([]*corev2.Event, error) {
+func listEvents(ctx context.Context, c EventClient, entity string, maxSize int) ([]*corev2.Event, error) {
 	pred := &store.SelectionPredicate{Continue: "", Limit: int64(loaderPageSize)}
 	list := func(ctx context.Context, entity string, pred *store.SelectionPredicate) ([]*corev2.Event, error) {
 		if entity == "" {
@@ -160,7 +185,7 @@ func listEvents(ctx context.Context, c EventClient, entity string) ([]*corev2.Ev
 			return results, err
 		}
 		results = append(results, r...)
-		if pred.Continue == "" || len(r) < loaderPageSize {
+		if pred.Continue == "" || len(r) < loaderPageSize || len(results) >= maxSize {
 			break
 		}
 	}
@@ -173,7 +198,7 @@ func loadEventsBatchFn(c EventClient) dataloader.BatchFunc {
 		for _, key := range keys {
 			key := newEventCacheKey(key.String())
 			ctx := store.NamespaceContext(ctx, key.namespace)
-			records, err := listEvents(ctx, c, key.entity)
+			records, err := listEvents(ctx, c, key.entity, maxLengthEventDataloader)
 			result := &dataloader.Result{Data: records, Error: handleListErr(err)}
 			results = append(results, result)
 		}
@@ -204,6 +229,7 @@ func loadEventFiltersBatchFn(c EventFilterClient) dataloader.BatchFunc {
 		results := make([]*dataloader.Result, 0, len(keys))
 		for _, key := range keys {
 			ctx := store.NamespaceContext(ctx, key.String())
+			ctx = context.WithValue(ctx, corev2.PageSizeKey, maxLengthGenericDataloader)
 			records, err := c.ListEventFilters(ctx)
 			result := &dataloader.Result{Data: records, Error: handleListErr(err)}
 			results = append(results, result)
@@ -234,6 +260,7 @@ func loadHandlersBatchFn(c HandlerClient) dataloader.BatchFunc {
 		results := make([]*dataloader.Result, 0, len(keys))
 		for _, key := range keys {
 			ctx := store.NamespaceContext(ctx, key.String())
+			ctx = context.WithValue(ctx, corev2.PageSizeKey, maxLengthGenericDataloader)
 			records, err := c.ListHandlers(ctx)
 			result := &dataloader.Result{Data: records, Error: handleListErr(err)}
 			results = append(results, result)
@@ -264,6 +291,7 @@ func loadMutatorsBatchFn(c MutatorClient) dataloader.BatchFunc {
 		results := make([]*dataloader.Result, 0, len(keys))
 		for _, key := range keys {
 			ctx := store.NamespaceContext(ctx, key.String())
+			ctx = context.WithValue(ctx, corev2.PageSizeKey, maxLengthGenericDataloader)
 			records, err := c.ListMutators(ctx)
 			result := &dataloader.Result{Data: records, Error: handleListErr(err)}
 			results = append(results, result)
@@ -293,6 +321,7 @@ func loadNamespacesBatchFn(c NamespaceClient) dataloader.BatchFunc {
 	return func(ctx context.Context, keys dataloader.Keys) []*dataloader.Result {
 		results := make([]*dataloader.Result, 0, len(keys))
 		for range keys {
+			ctx := context.WithValue(ctx, corev2.PageSizeKey, maxLengthGenericDataloader)
 			records, err := c.ListNamespaces(ctx, &store.SelectionPredicate{})
 			result := &dataloader.Result{Data: records, Error: handleListErr(err)}
 			results = append(results, result)
@@ -301,15 +330,15 @@ func loadNamespacesBatchFn(c NamespaceClient) dataloader.BatchFunc {
 	}
 }
 
-func loadNamespaces(ctx context.Context) ([]*corev2.Namespace, error) {
-	var records []*corev2.Namespace
+func loadNamespaces(ctx context.Context) ([]*corev3.Namespace, error) {
+	var records []*corev3.Namespace
 	loader, err := getLoader(ctx, namespacesLoaderKey)
 	if err != nil {
 		return records, err
 	}
 
 	results, err := loader.Load(ctx, dataloader.StringKey("*"))()
-	records, ok := results.([]*corev2.Namespace)
+	records, ok := results.([]*corev3.Namespace)
 	if err == nil && !ok {
 		err = fmt.Errorf("namespace loader: %s", errUnexpectedLoaderResult)
 	}
@@ -323,6 +352,7 @@ func loadSilencedsBatchFn(c SilencedClient) dataloader.BatchFunc {
 		results := make([]*dataloader.Result, 0, len(keys))
 		for _, key := range keys {
 			ctx := store.NamespaceContext(ctx, key.String())
+			ctx = context.WithValue(ctx, corev2.PageSizeKey, maxLengthGenericDataloader)
 			records, err := c.ListSilenced(ctx)
 			result := &dataloader.Result{Data: records, Error: handleListErr(err)}
 			results = append(results, result)
@@ -392,11 +422,11 @@ func handleListErr(err error) error {
 // Permission denied.
 func handleFetchResult(resource interface{}, err error) (interface{}, error) {
 	if err == authorization.ErrUnauthorized || err == authorization.ErrNoClaims {
-		logger.WithError(err).Warn("couldn't access resource")
+		logger.WithError(err).WithField("resource", fmt.Sprintf("%T", resource)).Warn("couldn't access resource")
 		return nil, nil
 	}
 	if _, ok := err.(*store.ErrNotFound); ok {
-		logger.WithError(err).Warn("couldn't access resource")
+		logger.WithError(err).WithField("resource", fmt.Sprintf("%T", resource)).Warn("couldn't access resource")
 		return nil, nil
 	}
 	if err != nil {

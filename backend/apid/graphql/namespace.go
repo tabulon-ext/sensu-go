@@ -3,12 +3,32 @@ package graphql
 import (
 	"sort"
 
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	corev2 "github.com/sensu/core/v2"
+	corev3 "github.com/sensu/core/v3"
 	"github.com/sensu/sensu-go/backend/apid/graphql/filter"
 	"github.com/sensu/sensu-go/backend/apid/graphql/globalid"
 	"github.com/sensu/sensu-go/backend/apid/graphql/schema"
 	"github.com/sensu/sensu-go/backend/store"
+	storev2 "github.com/sensu/sensu-go/backend/store/v2"
 	"github.com/sensu/sensu-go/graphql"
+)
+
+const (
+	// the maximum number of events & entities that will be read from the store
+	// into memory; things likely won't work well if the upper bound is hit but
+	// at least we aren't breaking the existing behaviour. Eventually this
+	// interface will be deprecated in lieu of one that can be performant.
+	maxSizeNamespaceListEvents = 50_000
+
+	// When this number is exceeded the resolver will cease to count the total
+	// number of entities. This should reduce the instances where we scan the
+	// entire keyspace.
+	maxCountNamespaceListEntities = 500
+
+	// Range of applicable chunk sizes that will be used when retrieving entities
+	// from the store.
+	minChunkSizeNamespaceListEntities = 250
+	maxChunkSizeNamespaceListEntities = 500
 )
 
 var _ schema.NamespaceFieldResolvers = (*namespaceImpl)(nil)
@@ -19,8 +39,10 @@ var _ schema.NamespaceFieldResolvers = (*namespaceImpl)(nil)
 
 type namespaceImpl struct {
 	schema.MutatorAliases
-	client      NamespaceClient
-	eventClient EventClient
+	client        NamespaceClient
+	eventClient   EventClient
+	entityClient  EntityClient
+	serviceConfig *ServiceConfig
 }
 
 // ID implements response to request for 'id' field.
@@ -30,23 +52,23 @@ func (r *namespaceImpl) ID(p graphql.ResolveParams) (string, error) {
 
 // Name implements response to request for 'name' field.
 func (r *namespaceImpl) Name(p graphql.ResolveParams) (string, error) {
-	nsp := p.Source.(*corev2.Namespace)
-	return nsp.Name, nil
+	nsp := p.Source.(*corev3.Namespace)
+	return nsp.Metadata.Name, nil
 }
 
 // Checks implements response to request for 'checks' field.
 func (r *namespaceImpl) Checks(p schema.NamespaceChecksFieldResolverParams) (interface{}, error) {
 	res := newOffsetContainer(p.Args.Offset, p.Args.Limit)
-	nsp := p.Source.(*corev2.Namespace)
+	nsp := p.Source.(*corev3.Namespace)
 
 	// finds all records
-	results, err := loadCheckConfigs(p.Context, nsp.Name)
+	results, err := loadCheckConfigs(p.Context, nsp.Metadata.Name)
 	if err != nil {
 		return res, err
 	}
 
 	// filter
-	matches, err := filter.Compile(p.Args.Filters, CheckFilters(), corev2.CheckConfigFields)
+	matches, err := filter.Compile(p.Args.Filters, CheckFilters(), corev3.CheckConfigFields)
 	if err != nil {
 		return res, err
 	}
@@ -73,16 +95,16 @@ func (r *namespaceImpl) Checks(p schema.NamespaceChecksFieldResolverParams) (int
 // EventFilters implements response to request for 'eventFilters' field.
 func (r *namespaceImpl) EventFilters(p schema.NamespaceEventFiltersFieldResolverParams) (interface{}, error) {
 	res := newOffsetContainer(p.Args.Offset, p.Args.Limit)
-	nsp := p.Source.(*corev2.Namespace)
+	nsp := p.Source.(*corev3.Namespace)
 
 	// find all records
-	results, err := loadEventFilters(p.Context, nsp.Name)
+	results, err := loadEventFilters(p.Context, nsp.Metadata.Name)
 	if err != nil {
 		return res, err
 	}
 
 	// filter
-	matches, err := filter.Compile(p.Args.Filters, EventFilterFilters(), corev2.EventFilterFields)
+	matches, err := filter.Compile(p.Args.Filters, EventFilterFilters(), corev3.EventFilterFields)
 	if err != nil {
 		return res, err
 	}
@@ -109,16 +131,16 @@ func (r *namespaceImpl) EventFilters(p schema.NamespaceEventFiltersFieldResolver
 // Handlers implements response to request for 'handlers' field.
 func (r *namespaceImpl) Handlers(p schema.NamespaceHandlersFieldResolverParams) (interface{}, error) {
 	res := newOffsetContainer(p.Args.Offset, p.Args.Limit)
-	nsp := p.Source.(*corev2.Namespace)
+	nsp := p.Source.(*corev3.Namespace)
 
 	// finds all records
-	results, err := loadHandlers(p.Context, nsp.Name)
+	results, err := loadHandlers(p.Context, nsp.Metadata.Name)
 	if err != nil {
 		return res, err
 	}
 
 	// filter
-	matches, err := filter.Compile(p.Args.Filters, HandlerFilters(), corev2.HandlerFields)
+	matches, err := filter.Compile(p.Args.Filters, HandlerFilters(), corev3.HandlerFields)
 	if err != nil {
 		return res, err
 	}
@@ -145,16 +167,16 @@ func (r *namespaceImpl) Handlers(p schema.NamespaceHandlersFieldResolverParams) 
 // Mutators implements response to request for 'mutators' field.
 func (r *namespaceImpl) Mutators(p schema.NamespaceMutatorsFieldResolverParams) (interface{}, error) {
 	res := newOffsetContainer(p.Args.Offset, p.Args.Limit)
-	nsp := p.Source.(*corev2.Namespace)
+	nsp := p.Source.(*corev3.Namespace)
 
 	// finds all records
-	results, err := loadMutators(p.Context, nsp.Name)
+	results, err := loadMutators(p.Context, nsp.Metadata.Name)
 	if err != nil {
 		return res, err
 	}
 
 	// filter
-	matches, err := filter.Compile(p.Args.Filters, MutatorFilters(), corev2.MutatorFields)
+	matches, err := filter.Compile(p.Args.Filters, MutatorFilters(), corev3.MutatorFields)
 	if err != nil {
 		return res, err
 	}
@@ -181,16 +203,16 @@ func (r *namespaceImpl) Mutators(p schema.NamespaceMutatorsFieldResolverParams) 
 // Silences implements response to request for 'silences' field.
 func (r *namespaceImpl) Silences(p schema.NamespaceSilencesFieldResolverParams) (interface{}, error) {
 	res := newOffsetContainer(p.Args.Offset, p.Args.Limit)
-	nsp := p.Source.(*corev2.Namespace)
+	nsp := p.Source.(*corev3.Namespace)
 
 	// fetch
-	results, err := loadSilenceds(p.Context, nsp.Name)
+	results, err := loadSilenceds(p.Context, nsp.Metadata.Name)
 	if err != nil {
 		return res, err
 	}
 
 	// filter
-	matches, err := filter.Compile(p.Args.Filters, SilenceFilters(), corev2.SilencedFields)
+	matches, err := filter.Compile(p.Args.Filters, SilenceFilters(), corev3.SilencedFields)
 	if err != nil {
 		return res, err
 	}
@@ -220,44 +242,96 @@ func (r *namespaceImpl) Silences(p schema.NamespaceSilencesFieldResolverParams) 
 	return res, nil
 }
 
+func listEntitiesOrdering(order schema.EntityListOrder) (string, bool) {
+	switch order {
+	case schema.EntityListOrders.ID:
+		return corev2.EntitySortName, false
+	default:
+		return corev2.EntitySortName, true
+	}
+}
+
 // Entities implements response to request for 'entities' field.
 func (r *namespaceImpl) Entities(p schema.NamespaceEntitiesFieldResolverParams) (interface{}, error) {
 	res := newOffsetContainer(p.Args.Offset, p.Args.Limit)
-	nsp := p.Source.(*corev2.Namespace)
+	ctx := store.NamespaceContext(p.Context, p.Source.(*corev3.Namespace).Metadata.Name)
 
-	// fetch
-	results, err := loadEntities(p.Context, nsp.Name)
+	chunkSize := p.Args.Limit
+	chunkSize = maxInt(chunkSize, minChunkSizeNamespaceListEntities)
+	chunkSize = minInt(chunkSize, maxChunkSizeNamespaceListEntities)
+
+	ordering, desc := listEntitiesOrdering(p.Args.OrderBy)
+	pred := &store.SelectionPredicate{
+		Ordering:   ordering,
+		Descending: desc,
+		Limit:      int64(chunkSize),
+	}
+
+	matches := 0
+	records := make([]*corev2.Entity, 0, p.Args.Limit)
+
+CONTINUE:
+	queryResult, err := r.entityClient.ListEntities(ctx, pred)
 	if err != nil {
 		return res, err
 	}
 
 	// filter
-	matches, err := filter.Compile(p.Args.Filters, EntityFilters(), corev2.EntityFields)
+	matchFn, err := filter.Compile(p.Args.Filters, EntityFilters(), corev3.EntityFields)
 	if err != nil {
 		return res, err
 	}
-	filteredResults := make([]*corev2.Entity, 0, len(results))
-	for i := range results {
-		if matches(results[i]) {
-			filteredResults = append(filteredResults, results[i])
+	for i := range queryResult {
+		if matchFn(queryResult[i]) {
+			matches++
+			if matches > p.Args.Offset && len(records) < p.Args.Limit {
+				records = append(records, queryResult[i])
+			}
 		}
 	}
 
-	// sort records
-	switch p.Args.OrderBy {
-	case schema.EntityListOrders.LASTSEEN:
-		sort.Sort(corev2.SortEntitiesByLastSeen(filteredResults))
-	default:
-		sort.Sort(corev2.SortEntitiesByID(
-			filteredResults,
-			p.Args.OrderBy == schema.EntityListOrders.ID,
-		))
+	// in the case where there are still more entities to scan through,
+	// continue scanning...
+	if pred.Continue != "" {
+		// ...if the user's requested slice is not yet satisfied
+		if (matches - p.Args.Offset) < p.Args.Limit {
+			goto CONTINUE
+		}
+		// ...or, if we are still determining the total count.
+		if matches < maxCountNamespaceListEntities {
+			goto CONTINUE
+		}
 	}
 
-	// paginate
-	l, h := clampSlice(p.Args.Offset, p.Args.Offset+p.Args.Limit, len(filteredResults))
-	res.Nodes = filteredResults[l:h]
-	res.PageInfo.totalCount = len(filteredResults)
+	var metricStore ClusterMetricStore
+	if r.serviceConfig != nil {
+		metricStore = r.serviceConfig.ClusterMetricStore
+	}
+
+	// If no filter was applied, use the cluster metrics service to get the
+	// total count. This allows us to present an accurate count without having
+	// to scan the entire key space.
+	var hasTotalCount bool
+	if len(p.Args.Filters) == 0 && metricStore != nil {
+		if count, err := metricStore.EntityCount(ctx, "total"); err != nil {
+			logger.WithError(err).Warn("Namespace.Entities: unable to retrieve total entity count")
+		} else if count > 0 {
+			hasTotalCount = true
+			matches = count
+		}
+	} else if metricStore == nil {
+		logger.Debug("Namespace.Entities: metric store is not present")
+	}
+
+	// In the case where we ended up scanning the entire keyspace we can also
+	// confidently convey that the total count is complete.
+	if !hasTotalCount && pred.Continue == "" {
+		hasTotalCount = true
+	}
+
+	res.Nodes = records
+	res.PageInfo.partialCount = !hasTotalCount
+	res.PageInfo.totalCount = matches
 	return res, nil
 }
 
@@ -282,9 +356,14 @@ func listEventsOrdering(order schema.EventsListOrder) (string, bool) {
 
 func (r *namespaceImpl) eventsWithInStoreFiltering(p schema.NamespaceEventsFieldResolverParams) (interface{}, error) {
 	res := newOffsetContainer(p.Args.Offset, p.Args.Limit)
-	nsp := p.Source.(*corev2.Namespace)
+	nsp := p.Source.(*corev3.Namespace)
 
-	ctx := store.NamespaceContext(p.Context, nsp.Name)
+	ctx := store.NamespaceContext(p.Context, nsp.Metadata.Name)
+
+	selector := parseEventFilters(p.Args.Filters)
+	if selector != nil {
+		ctx = storev2.EventContextWithSelector(ctx, selector)
+	}
 
 	ordering, direction := listEventsOrdering(p.Args.OrderBy)
 	pred := &store.SelectionPredicate{
@@ -315,16 +394,17 @@ func (r *namespaceImpl) Events(p schema.NamespaceEventsFieldResolverParams) (int
 	}
 
 	res := newOffsetContainer(p.Args.Offset, p.Args.Limit)
-	nsp := p.Source.(*corev2.Namespace)
+	nsp := p.Source.(*corev3.Namespace)
 
 	// fetch
-	results, err := loadEvents(p.Context, nsp.Name, "")
+	ctx := store.NamespaceContext(p.Context, nsp.Metadata.Name)
+	results, err := listEvents(ctx, r.eventClient, "", maxSizeNamespaceListEvents)
 	if err != nil {
 		return res, err
 	}
 
 	// filter
-	matches, err := filter.Compile(p.Args.Filters, EventFilters(), corev2.EventFields)
+	matches, err := filter.Compile(p.Args.Filters, EventFilters(), corev3.EventFields)
 	if err != nil {
 		return res, err
 	}

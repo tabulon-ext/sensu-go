@@ -8,15 +8,19 @@ import (
 	"testing"
 
 	"github.com/gorilla/mux"
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	corev2 "github.com/sensu/core/v2"
+	"github.com/sensu/sensu-go/backend/store"
+	storev2 "github.com/sensu/sensu-go/backend/store/v2"
 	"github.com/sensu/sensu-go/testing/mockstore"
+	"github.com/sensu/core/v3/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
 
 func TestAPIKeysRouter(t *testing.T) {
-	s := &mockstore.MockStore{}
-	s.On("GetUser", mock.Anything, mock.Anything).Return(corev2.FixtureUser("admin"), nil)
+	s := &mockstore.V2MockStore{}
+	cs := new(mockstore.ConfigStore)
+	s.On("GetConfigStore").Return(cs)
 	router := NewAPIKeysRouter(s)
 	parentRouter := mux.NewRouter().PathPrefix(corev2.URLPrefix).Subrouter()
 	router.Mount(parentRouter)
@@ -25,8 +29,8 @@ func TestAPIKeysRouter(t *testing.T) {
 	fixture := corev2.FixtureAPIKey("226f9e06-9d54-45c6-a9f6-4206bfa7ccf6", "bar")
 
 	tests := []routerTestCase{}
-	tests = append(tests, getTestCases(fixture)...)
-	tests = append(tests, listTestCases(empty)...)
+	tests = append(tests, getTestCases[*corev2.APIKey](fixture)...)
+	tests = append(tests, listTestCases[*corev2.APIKey](empty)...)
 	tests = append(tests, deleteTestCases(fixture)...)
 	for _, tt := range tests {
 		run(t, tt, parentRouter, s)
@@ -34,9 +38,11 @@ func TestAPIKeysRouter(t *testing.T) {
 }
 
 func TestPostAPIKey(t *testing.T) {
-	s := &mockstore.MockStore{}
-	s.On("CreateResource", mock.Anything, mock.Anything).Return(nil, nil)
-	s.On("GetUser", mock.Anything, mock.Anything).Return(corev2.FixtureUser("admin"), nil)
+	s := &mockstore.V2MockStore{}
+	cs := new(mockstore.ConfigStore)
+	s.On("GetConfigStore").Return(cs)
+	cs.On("CreateIfNotExists", mock.Anything, mock.Anything, mock.Anything).Return(nil)
+	cs.On("Get", mock.Anything, mock.Anything).Return(mockstore.Wrapper[*corev2.User]{Value: corev2.FixtureUser("admin")}, nil)
 	router := NewAPIKeysRouter(s)
 	parentRouter := mux.NewRouter()
 	router.Mount(parentRouter)
@@ -45,7 +51,7 @@ func TestPostAPIKey(t *testing.T) {
 
 	// Prepare the HTTP request
 	fixture := corev2.FixtureAPIKey("226f9e06-9d54-45c6-a9f6-4206bfa7ccf6", "admin")
-	payload, err := json.Marshal(fixture)
+	payload, err := json.Marshal(types.WrapResource(fixture))
 	assert.NoError(t, err)
 	client := new(http.Client)
 	req, err := http.NewRequest(http.MethodPost, server.URL+"/apikeys", bytes.NewReader(payload))
@@ -64,10 +70,14 @@ func TestPostAPIKey(t *testing.T) {
 }
 
 func TestPostAPIKeyInvalidUser(t *testing.T) {
-	s := &mockstore.MockStore{}
-	var user *corev2.User
-	s.On("CreateResource", mock.Anything, mock.Anything).Return(nil, nil)
-	s.On("GetUser", mock.Anything, mock.Anything).Return(user, nil)
+	s := &mockstore.V2MockStore{}
+	cs := new(mockstore.ConfigStore)
+	s.On("GetConfigStore").Return(cs)
+	var user corev2.User
+	user.Username = "admin"
+	cs.On("Create", mock.Anything, mock.Anything, mock.Anything).Return(nil)
+	userReq := storev2.NewResourceRequestFromResource(&user)
+	cs.On("Get", mock.Anything, userReq).Return(nil, &store.ErrNotFound{})
 	router := NewAPIKeysRouter(s)
 	parentRouter := mux.NewRouter()
 	router.Mount(parentRouter)
@@ -76,7 +86,7 @@ func TestPostAPIKeyInvalidUser(t *testing.T) {
 
 	// Prepare the HTTP request
 	fixture := corev2.FixtureAPIKey("226f9e06-9d54-45c6-a9f6-4206bfa7ccf6", "admin")
-	payload, err := json.Marshal(fixture)
+	payload, err := json.Marshal(types.WrapResource(fixture))
 	assert.NoError(t, err)
 	client := new(http.Client)
 	req, err := http.NewRequest(http.MethodPost, server.URL+"/apikeys", bytes.NewReader(payload))

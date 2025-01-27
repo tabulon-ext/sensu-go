@@ -1,6 +1,7 @@
 package v2
 
 import (
+	"context"
 	"sync"
 
 	"github.com/sensu/sensu-go/backend/store"
@@ -9,10 +10,10 @@ import (
 
 type Proxy struct {
 	mu   sync.RWMutex
-	impl Interface
+	impl ConfigStore
 }
 
-func (p *Proxy) UpdateStore(store Interface) {
+func (p *Proxy) UpdateStore(store ConfigStore) {
 	if store == p {
 		panic("UpdateStore called with itself as argument")
 	}
@@ -22,60 +23,81 @@ func (p *Proxy) UpdateStore(store Interface) {
 }
 
 // CreateOrUpdate creates or updates the wrapped resource.
-func (p *Proxy) CreateOrUpdate(req ResourceRequest, wrapper Wrapper) error {
+func (p *Proxy) CreateOrUpdate(ctx context.Context, req ResourceRequest, wrapper Wrapper) error {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.impl.CreateOrUpdate(req, wrapper)
+	return p.impl.CreateOrUpdate(ctx, req, wrapper)
 }
 
 // UpdateIfExists updates the resource with the wrapped resource, but only
 // if it already exists in the store.
-func (p *Proxy) UpdateIfExists(req ResourceRequest, wrapper Wrapper) error {
+func (p *Proxy) UpdateIfExists(ctx context.Context, req ResourceRequest, wrapper Wrapper) error {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.impl.UpdateIfExists(req, wrapper)
+	return p.impl.UpdateIfExists(ctx, req, wrapper)
 }
 
 // CreateIfNotExists writes the wrapped resource to the store, but only if
 // it does not already exist.
-func (p *Proxy) CreateIfNotExists(req ResourceRequest, wrapper Wrapper) error {
+func (p *Proxy) CreateIfNotExists(ctx context.Context, req ResourceRequest, wrapper Wrapper) error {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.impl.CreateIfNotExists(req, wrapper)
+	return p.impl.CreateIfNotExists(ctx, req, wrapper)
 }
 
 // Get gets a wrapped resource from the store.
-func (p *Proxy) Get(req ResourceRequest) (Wrapper, error) {
+func (p *Proxy) Get(ctx context.Context, req ResourceRequest) (Wrapper, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.impl.Get(req)
+	return p.impl.Get(ctx, req)
 }
 
 // Delete deletes a resource from the store.
-func (p *Proxy) Delete(req ResourceRequest) error {
+func (p *Proxy) Delete(ctx context.Context, req ResourceRequest) error {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.impl.Delete(req)
+	return p.impl.Delete(ctx, req)
 }
 
 // List lists all resources specified by the resource request, and the
 // selection predicate.
-func (p *Proxy) List(req ResourceRequest, pred *store.SelectionPredicate) (WrapList, error) {
+func (p *Proxy) List(ctx context.Context, req ResourceRequest, pred *store.SelectionPredicate) (WrapList, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.impl.List(req, pred)
+	return p.impl.List(ctx, req, pred)
+}
+
+func (p *Proxy) Count(ctx context.Context, req ResourceRequest) (int, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.impl.Count(ctx, req)
 }
 
 // Exists returns true if the resource indicated by the request exists
-func (p *Proxy) Exists(req ResourceRequest) (bool, error) {
+func (p *Proxy) Exists(ctx context.Context, req ResourceRequest) (bool, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.impl.Exists(req)
+	return p.impl.Exists(ctx, req)
 }
 
 // Patch patches the resource given in the request
-func (p *Proxy) Patch(req ResourceRequest, wrapper Wrapper, patcher patch.Patcher, cond *store.ETagCondition) error {
+func (p *Proxy) Patch(ctx context.Context, req ResourceRequest, patcher patch.Patcher) error {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.impl.Patch(req, wrapper, patcher, cond)
+	return p.impl.Patch(ctx, req, patcher)
+}
+
+// Watch sets up a watcher that responds to updates to the given key or
+// keyspace indicated by the ResourceRequest.
+func (p *Proxy) Watch(ctx context.Context, req ResourceRequest) <-chan []WatchEvent {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.impl.Watch(ctx, req)
+}
+
+// Initialize sets up a cluster with the default resources & config.
+func (p *Proxy) Initialize(ctx context.Context, fn InitializeFunc) error {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.impl.Initialize(ctx, fn)
 }

@@ -1,15 +1,17 @@
 package graphql
 
 import (
+	"math"
 	"sort"
 	"time"
 
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	corev2 "github.com/sensu/core/v2"
+	corev3 "github.com/sensu/core/v3"
 	"github.com/sensu/sensu-go/backend/apid/graphql/filter"
 	"github.com/sensu/sensu-go/backend/apid/graphql/globalid"
 	"github.com/sensu/sensu-go/backend/apid/graphql/schema"
 	"github.com/sensu/sensu-go/graphql"
-	"github.com/sensu/sensu-go/types"
+	"github.com/sensu/core/v3/types"
 	"github.com/sensu/sensu-go/util/strings"
 )
 
@@ -57,7 +59,7 @@ func (r *entityImpl) Events(p schema.EntityEventsFieldResolverParams) (interface
 	}
 
 	// filter
-	matches, err := filter.Compile(p.Args.Filters, EventFilters(), corev2.EventFields)
+	matches, err := filter.Compile(p.Args.Filters, EventFilters(), corev3.EventFields)
 	if err != nil {
 		return []interface{}{}, err
 	}
@@ -108,15 +110,10 @@ func (r *entityImpl) Status(p graphql.ResolveParams) (int, error) {
 	src := p.Source.(*corev2.Entity)
 
 	// fetch
-	results, err := loadEvents(p.Context, src.Namespace, src.Name)
+	evs, err := loadEvents(p.Context, src.Namespace, src.Name)
 	if err != nil {
 		return 0, err
 	}
-
-	// filter events associated w/ entity
-	evs := filterEvents(results, func(obj *corev2.Event) bool {
-		return obj.Entity.Name == src.Name
-	})
 
 	// return -1 (unknown) if no events found
 	if len(evs) == 0 {
@@ -131,6 +128,12 @@ func (r *entityImpl) Status(p graphql.ResolveParams) (int, error) {
 		}
 		st = maxInt(int(ev.Check.Status), st)
 	}
+
+	// web browsers handle values > math.MaxInt32 inconsistently
+	if st < int(math.MinInt32) || st > int(math.MaxInt32) {
+		st = math.MaxInt32
+	}
+
 	return st, nil
 }
 
@@ -171,7 +174,7 @@ func (*entityImpl) IsTypeOf(s interface{}, p graphql.IsTypeOfParams) bool {
 
 // ToJSON implements response to request for 'toJSON' field.
 func (*entityImpl) ToJSON(p graphql.ResolveParams) (interface{}, error) {
-	return types.WrapResource(p.Source.(corev2.Resource)), nil
+	return types.WrapResource(p.Source.(corev3.Resource)), nil
 }
 
 //

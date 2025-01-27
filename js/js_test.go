@@ -3,8 +3,8 @@ package js
 import (
 	"testing"
 
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
-	"github.com/sensu/sensu-go/types/dynamic"
+	corev2 "github.com/sensu/core/v2"
+	"github.com/sensu/sensu-go/dynamic"
 	"github.com/stretchr/testify/assert"
 )
 

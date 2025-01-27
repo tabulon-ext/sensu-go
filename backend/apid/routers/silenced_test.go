@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/gorilla/mux"
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	corev2 "github.com/sensu/core/v2"
 	"github.com/sensu/sensu-go/backend/apid/actions"
 	"github.com/sensu/sensu-go/testing/mockstore"
 	"github.com/stretchr/testify/mock"
@@ -18,7 +18,11 @@ import (
 
 func TestSilencedRouter(t *testing.T) {
 	// Setup the router
-	s := &mockstore.MockStore{}
+	s := &mockstore.V2MockStore{}
+	cs := new(mockstore.ConfigStore)
+	s.On("GetConfigStore").Return(cs)
+	silenced := &mockstore.MockStore{}
+	s.On("GetSilencesStore").Return(silenced)
 	router := NewSilencedRouter(s)
 	parentRouter := mux.NewRouter().PathPrefix(corev2.URLPrefix).Subrouter()
 	router.Mount(parentRouter)
@@ -93,7 +97,7 @@ func TestSilencedRouterCustomRoutes(t *testing.T) {
 			name:   "it returns 500 if the store returns an error while creating a silenced entry",
 			method: http.MethodPost,
 			path:   empty.URIPath(),
-			body:   marshal(fixture),
+			body:   marshalWrapped(fixture),
 			controllerFunc: func(c *mockSilencedController) {
 				c.On("Create", mock.Anything, mock.Anything).
 					Return(actions.NewErrorf(actions.InternalErr)).
@@ -105,7 +109,7 @@ func TestSilencedRouterCustomRoutes(t *testing.T) {
 			name:   "it returns 201 when an event is successfully created",
 			method: http.MethodPost,
 			path:   empty.URIPath(),
-			body:   marshal(fixture),
+			body:   marshalWrapped(fixture),
 			controllerFunc: func(c *mockSilencedController) {
 				c.On("Create", mock.Anything, mock.Anything).
 					Return(nil).
@@ -131,7 +135,7 @@ func TestSilencedRouterCustomRoutes(t *testing.T) {
 			name:   "it returns 500 if the store returns an error while updating a silenced entry",
 			method: http.MethodPut,
 			path:   fixture.URIPath(),
-			body:   marshal(fixture),
+			body:   marshalWrapped(fixture),
 			controllerFunc: func(c *mockSilencedController) {
 				c.On("CreateOrReplace", mock.Anything, mock.Anything).
 					Return(actions.NewErrorf(actions.InternalErr)).
@@ -143,7 +147,7 @@ func TestSilencedRouterCustomRoutes(t *testing.T) {
 			name:   "it returns 201 when a silenced entry is successfully updated",
 			method: http.MethodPut,
 			path:   fixture.URIPath(),
-			body:   marshal(fixture),
+			body:   marshalWrapped(fixture),
 			controllerFunc: func(c *mockSilencedController) {
 				c.On("CreateOrReplace", mock.Anything, mock.Anything).
 					Return(nil).

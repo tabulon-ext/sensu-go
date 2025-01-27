@@ -9,16 +9,15 @@ import (
 	"strings"
 	"testing"
 
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
-	"github.com/sensu/sensu-go/types"
+	corev2 "github.com/sensu/core/v2"
 	"github.com/stretchr/testify/assert"
 )
 
-func fixtureAssets() []types.Asset {
-	return []types.Asset{
-		*types.FixtureAsset("asset-1"),
-		*types.FixtureAsset("asset-2"),
-		*types.FixtureAsset("asset-3"),
+func fixtureAssets() []corev2.Asset {
+	return []corev2.Asset{
+		*corev2.FixtureAsset("asset-1"),
+		*corev2.FixtureAsset("asset-2"),
+		*corev2.FixtureAsset("asset-3"),
 	}
 }
 

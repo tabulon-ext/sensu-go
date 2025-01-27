@@ -10,9 +10,9 @@ import (
 	"testing"
 
 	"github.com/gorilla/mux"
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	corev2 "github.com/sensu/core/v2"
+	"github.com/sensu/core/v3/types"
 	"github.com/sensu/sensu-go/backend/apid/actions"
-	"github.com/sensu/sensu-go/backend/apid/handlers"
 	"github.com/sensu/sensu-go/testing/mockqueue"
 	"github.com/sensu/sensu-go/testing/mockstore"
 	"github.com/sensu/sensu-go/testing/testutil"
@@ -40,17 +40,17 @@ func TestHttpApiChecksAdhocRequest(t *testing.T) {
 		testutil.ContextWithNamespace("default"),
 	)
 
-	store := &mockstore.MockStore{}
+	store := &mockstore.V2MockStore{}
+	cs := new(mockstore.ConfigStore)
+	store.On("GetConfigStore").Return(cs)
 	queue := &mockqueue.MockQueue{}
 	adhocRequest := corev2.FixtureAdhocRequest("check1", []string{"subscription1", "subscription2"})
 	checkConfig := corev2.FixtureCheckConfig("check1")
-	store.On("GetCheckConfigByName", mock.Anything, "check1").Return(checkConfig, nil)
+	cs.On("Get", mock.Anything, mock.Anything).Return(mockstore.Wrapper[*corev2.CheckConfig]{Value: checkConfig}, nil)
 	queue.On("Enqueue", mock.Anything, mock.Anything).Return(nil)
-	getter := &mockqueue.Getter{}
-	getter.On("GetQueue", mock.Anything).Return(queue)
-	checkController := actions.NewCheckController(store, getter)
+	checkController := actions.NewCheckController(store, queue)
 	c := &ChecksRouter{controller: checkController}
-	payload, _ := json.Marshal(adhocRequest)
+	payload, _ := json.Marshal(types.WrapResource(adhocRequest))
 
 	req, err := http.NewRequest(http.MethodPost, "/", bytes.NewBuffer(payload))
 	if err != nil {
@@ -70,11 +70,10 @@ func TestHttpApiChecksAdhocRequest(t *testing.T) {
 
 func TestChecksRouter(t *testing.T) {
 	// Setup the router
-	s := &mockstore.MockStore{}
-	router := ChecksRouter{handlers: handlers.Handlers{
-		Resource: &corev2.CheckConfig{},
-		Store:    s,
-	}}
+	s := &mockstore.V2MockStore{}
+	cs := new(mockstore.ConfigStore)
+	s.On("GetConfigStore").Return(cs)
+	router := ChecksRouter{store: s}
 	parentRouter := mux.NewRouter().PathPrefix(corev2.URLPrefix).Subrouter()
 	router.Mount(parentRouter)
 
@@ -82,9 +81,9 @@ func TestChecksRouter(t *testing.T) {
 	fixture := corev2.FixtureCheckConfig("foo")
 
 	tests := []routerTestCase{}
-	tests = append(tests, getTestCases(fixture)...)
-	tests = append(tests, listTestCases(empty)...)
-	tests = append(tests, createTestCases(empty)...)
+	tests = append(tests, getTestCases[*corev2.CheckConfig](fixture)...)
+	tests = append(tests, listTestCases[*corev2.CheckConfig](empty)...)
+	tests = append(tests, createTestCases(fixture)...)
 	tests = append(tests, updateTestCases(fixture)...)
 	tests = append(tests, deleteTestCases(fixture)...)
 	for _, tt := range tests {
@@ -113,7 +112,7 @@ func TestChecksRouterCustomRoutes(t *testing.T) {
 			name:   "it adds a check hook to a check",
 			method: http.MethodPut,
 			path:   "/namespaces/default/checks/check1/hooks/non-zero",
-			body:   marshal(corev2.FixtureHookList("hook1")),
+			body:   marshalRaw(corev2.FixtureHookList("hook1")),
 			controllerFunc: func(c *mockCheckController) {
 				c.On("AddCheckHook", mock.Anything, "check1", mock.AnythingOfType("v2.HookList")).Return(nil)
 			},

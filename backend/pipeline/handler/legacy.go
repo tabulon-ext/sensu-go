@@ -8,11 +8,12 @@ import (
 	"os"
 	"time"
 
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	corev2 "github.com/sensu/core/v2"
 	"github.com/sensu/sensu-go/asset"
 	"github.com/sensu/sensu-go/backend/licensing"
 	"github.com/sensu/sensu-go/backend/secrets"
 	"github.com/sensu/sensu-go/backend/store"
+	storev2 "github.com/sensu/sensu-go/backend/store/v2"
 	"github.com/sensu/sensu-go/command"
 	"github.com/sensu/sensu-go/util/environment"
 	utillogging "github.com/sensu/sensu-go/util/logging"
@@ -34,7 +35,7 @@ type LegacyAdapter struct {
 	Executor               command.Executor
 	LicenseGetter          licensing.Getter
 	SecretsProviderManager secrets.ProviderManagerer
-	Store                  store.Store
+	Store                  storev2.Interface
 	StoreTimeout           time.Duration
 }
 
@@ -59,11 +60,18 @@ func (l *LegacyAdapter) Handle(ctx context.Context, ref *corev2.ResourceReferenc
 	fields := utillogging.EventFields(event, false)
 	fields["pipeline"] = corev2.ContextPipeline(ctx)
 	fields["pipeline_workflow"] = corev2.ContextPipelineWorkflow(ctx)
+	fields["handler"] = ref.Name
 
 	tctx, cancel := context.WithTimeout(ctx, l.StoreTimeout)
-	handler, err := l.Store.GetHandlerByName(tctx, ref.Name)
+	hstore := storev2.Of[*corev2.Handler](l.Store)
+	handler, err := hstore.Get(tctx, storev2.ID{Namespace: event.Entity.Namespace, Name: ref.Name})
 	cancel()
 	if err != nil {
+		if _, ok := err.(*store.ErrNotFound); ok {
+			logger.WithFields(fields).
+				Error("handler not found, skipping handler execution")
+			return nil
+		}
 		return fmt.Errorf("failed to fetch handler from store: %v", err)
 	}
 
@@ -78,9 +86,13 @@ func (l *LegacyAdapter) Handle(ctx context.Context, ref *corev2.ResourceReferenc
 		}
 		fields["status"] = result.Status
 		fields["output"] = result.Output
-		logger.WithFields(fields).Info("event pipe handler executed")
+		if result.Status == 0 {
+			logger.WithFields(fields).Info("event pipe handler executed")
+		} else {
+			logger.WithFields(fields).Error("event pipe handler returned non ok status code")
+		}
 	case "tcp", "udp":
-		_, err := l.socketHandler(ctx, handler, event, mutatedData)
+		err := l.socketHandler(ctx, handler, event, mutatedData)
 		if err != nil {
 			logger.WithFields(fields).Error(err)
 			return err
@@ -158,7 +170,7 @@ func (l *LegacyAdapter) pipeHandler(ctx context.Context, handler *corev2.Handler
 
 // socketHandler creates either a TCP or UDP client to write mutatedData
 // to a socket. The provided handler Type determines the protocol.
-func (l *LegacyAdapter) socketHandler(ctx context.Context, handler *corev2.Handler, event *corev2.Event, mutatedData []byte) (conn net.Conn, err error) {
+func (l *LegacyAdapter) socketHandler(ctx context.Context, handler *corev2.Handler, event *corev2.Event, mutatedData []byte) (err error) {
 	protocol := handler.Type
 	host := handler.Socket.Host
 	port := handler.Socket.Port
@@ -182,9 +194,10 @@ func (l *LegacyAdapter) socketHandler(ctx context.Context, handler *corev2.Handl
 
 	logger.WithFields(fields).Debug("sending event to socket handler")
 
-	conn, err = net.DialTimeout(protocol, address, timeoutDuration)
-	if err != nil {
-		return nil, err
+	deadline := time.Now().Add(timeoutDuration)
+	conn, cerr := net.DialTimeout(protocol, address, timeoutDuration)
+	if cerr != nil {
+		return cerr
 	}
 	defer func() {
 		e := conn.Close()
@@ -193,16 +206,24 @@ func (l *LegacyAdapter) socketHandler(ctx context.Context, handler *corev2.Handl
 		}
 	}()
 
-	bytes, err := conn.Write(mutatedData)
-	if err != nil {
-		logger.WithFields(fields).WithError(err).Error("failed to execute event handler")
-		return nil, err
+	if err := conn.SetWriteDeadline(deadline); err != nil {
+		return err
 	}
 
+	bytes, err := conn.Write(mutatedData)
 	fields["bytes"] = bytes
+	if err != nil {
+		logger.WithFields(fields).WithError(err).Error("failed to execute event handler")
+		return err
+	}
+	// n.b., I'm not sure if this condition is necessary, and it may be
+	// unnecessarily defensive.
+	if bytes < len(mutatedData) {
+		logger.WithFields(fields).Error("short write")
+		return errors.New("short write for socket handler")
+	}
+
 	logger.WithFields(fields).Info("event socket handler executed")
 
-	// TODO(jk): Why return the connection here if we never make use of it?
-	// Perhaps we should return bytes or a result type?
-	return conn, nil
+	return nil
 }

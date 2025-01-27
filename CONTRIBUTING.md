@@ -11,7 +11,7 @@ branch to base your changes on, and so on.
 1. Open an issue to describe your proposed improvement or feature
 1. [Install Go and fork the Sensu Go repository](https://github.com/sensu/sensu-go#building-from-source)
 1. Create your feature branch (`git checkout -b my-new-feature`)
-1. If applicable, add a [CHANGELOG.md entry](#changelog) describing your change.
+1. If applicable, add a [CHANGELOG-7.md entry](#changelog) describing your change.
 1. Commit your changes with a [DCO Signed-off-by statement](#dco) (`git commit --signoff`)
 1. Push your feature branch (`git push origin my-new-feature`)
 1. Create a Pull Request as appropriate based on the issue discussion
@@ -95,7 +95,7 @@ after this with `git push -f`. -- Thanks Chef!
 
 ## Changelog
 
-The Sensu [Changelog](CHANGELOG.md) is based on the Sensu Community
+The Sensu [Changelog](CHANGELOG-7.md) is based on the Sensu Community
 [Changelog guidelines](https://github.com/sensu-plugins/community/blob/master/HOW_WE_CHANGELOG.md).
 
 All new changes go underneath the _Unreleased_ heading at the top of the Changelog.
@@ -217,6 +217,10 @@ Once you make a change to any `*.proto` file within the **types** package, you w
 
 Sensu uses [Go modules](https://github.com/golang/go/wiki/Modules) for managing
 its dependencies.
+
+**Note:**
+Historically, sensu-go contained several modules. The main application `gihub.com/sensu/sensu-go`, our api definitions `github.com/sensu/sensu-go/core/v2` and `github.com/sensu/sensu-go/core/v3`, and `github.com/sensu/sensu-go/types`.
+Presently `github.com/sensu/sensu-go` is the only actively developed module in this repository, with the api definitions migrated to `github.com/sensu/core`, and the types module deprecated.
 
 ## Testing
 

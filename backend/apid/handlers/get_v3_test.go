@@ -5,10 +5,11 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/gorilla/mux"
 	"github.com/stretchr/testify/mock"
 
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	corev2 "github.com/sensu/core/v2"
 	"github.com/sensu/sensu-go/backend/store"
 	storev2 "github.com/sensu/sensu-go/backend/store/v2"
 	"github.com/sensu/sensu-go/testing/fixture"
@@ -22,7 +23,7 @@ func TestHandlers_GetV3Resource(t *testing.T) {
 	tests := []struct {
 		name      string
 		urlVars   map[string]string
-		storeFunc func(*mockstore.V2MockStore)
+		storeFunc func(*mockstore.ConfigStore)
 		want      interface{}
 		wantErr   bool
 	}{
@@ -34,8 +35,8 @@ func TestHandlers_GetV3Resource(t *testing.T) {
 		{
 			name:    "store ErrNotFound",
 			urlVars: map[string]string{"id": "foo"},
-			storeFunc: func(s *mockstore.V2MockStore) {
-				s.On("Get", mock.Anything).
+			storeFunc: func(s *mockstore.ConfigStore) {
+				s.On("Get", mock.Anything, mock.Anything).
 					Return((storev2.Wrapper)(nil), &store.ErrNotFound{})
 			},
 			wantErr: true,
@@ -43,8 +44,8 @@ func TestHandlers_GetV3Resource(t *testing.T) {
 		{
 			name:    "store ErrInternal",
 			urlVars: map[string]string{"id": "foo"},
-			storeFunc: func(s *mockstore.V2MockStore) {
-				s.On("Get", mock.Anything).
+			storeFunc: func(s *mockstore.ConfigStore) {
+				s.On("Get", mock.Anything, mock.Anything).
 					Return((storev2.Wrapper)(nil), &store.ErrInternal{})
 			},
 			wantErr: true,
@@ -52,8 +53,8 @@ func TestHandlers_GetV3Resource(t *testing.T) {
 		{
 			name:    "successful get",
 			urlVars: map[string]string{"id": "foo"},
-			storeFunc: func(s *mockstore.V2MockStore) {
-				s.On("Get", mock.Anything).
+			storeFunc: func(s *mockstore.ConfigStore) {
+				s.On("Get", mock.Anything, mock.Anything).
 					Return(wrapper, nil)
 			},
 			want: barResource,
@@ -61,26 +62,35 @@ func TestHandlers_GetV3Resource(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			store := &mockstore.V2MockStore{}
+			sto := &mockstore.V2MockStore{}
+			cs := new(mockstore.ConfigStore)
+			sto.On("GetConfigStore").Return(cs)
+
 			if tt.storeFunc != nil {
-				tt.storeFunc(store)
+				tt.storeFunc(cs)
 			}
 
-			h := Handlers{
-				V3Resource: &fixture.V3Resource{},
-				StoreV2:    store,
-			}
+			h := NewHandlers[*fixture.V3Resource](sto)
 
 			r, _ := http.NewRequest(http.MethodGet, "/", nil)
 			r = mux.SetURLVars(r, tt.urlVars)
 
-			got, err := h.GetV3Resource(r)
+			got, err := h.GetResource(r)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Handlers.GetResource() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 
-			if !reflect.DeepEqual(got, tt.want) {
+			if !cmp.Equal(got, HandlerResponse{}) {
+				meta := got.Resource.GetMetadata()
+				// delete these to facilitate comparison
+				delete(meta.Labels, store.SensuCreatedAtKey)
+				delete(meta.Labels, store.SensuUpdatedAtKey)
+				delete(meta.Labels, store.SensuDeletedAtKey)
+				delete(meta.Annotations, store.SensuETagKey)
+			}
+
+			if !reflect.DeepEqual(got.Resource, tt.want) {
 				t.Errorf("Handlers.GetResource() = %#v, want %#v", got, tt.want)
 			}
 		})

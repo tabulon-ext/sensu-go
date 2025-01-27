@@ -15,11 +15,12 @@ import (
 
 	"github.com/sensu/sensu-go/agent"
 	"github.com/sensu/sensu-go/command"
-	"github.com/sensu/sensu-go/types"
 	"github.com/sirupsen/logrus"
 
 	"net/http"
 	_ "net/http/pprof"
+
+	v2 "github.com/sensu/core/v2"
 )
 
 var (
@@ -28,13 +29,16 @@ var (
 	flagNamespace         = flag.String("namespace", agent.DefaultNamespace, "namespace to use for agents")
 	flagSubscriptions     = flag.String("subscriptions", "default", "comma separated list of subscriptions")
 	flagKeepaliveInterval = flag.Int("keepalive-interval", agent.DefaultKeepaliveInterval, "Keepalive interval")
-	flagKeepaliveTimeout  = flag.Int("keepalive-timeout", types.DefaultKeepaliveTimeout, "Keepalive timeout")
+	flagKeepaliveTimeout  = flag.Int("keepalive-timeout", v2.DefaultKeepaliveTimeout, "Keepalive timeout")
 	flagProfilingPort     = flag.Int("pprof-port", 6060, "pprof port to bind to")
 	flagPromBinding       = flag.String("prom", ":8080", "binding for prometheus server")
 	flagHugeEvents        = flag.Bool("huge-events", false, "send 1 MB events to the backend")
 	flagUser              = flag.String("user", agent.DefaultUser, "user to authenticate with server")
 	flagPassword          = flag.String("password", agent.DefaultPassword, "password to authenticate with server")
-	flagBaseEntityName    = flag.String("base-entity-name", "test-host", "base entity name to prepend with count number.")
+	flagBaseEntityName    = flag.String("base-entity-name", "test-host", "base entity name to prepend with count number")
+	flagMaxSessionLength  = flag.Duration("max-session-length", 0*time.Second, "maximum amount of time after which the agent will reconnect to one of the configured backends (no maximum by default)")
+	flagDeregister        = flag.Bool("deregister", true, "should loadit entities automatically deregister. defaults true")
+	flagHandshakeTimeout  = flag.Int("backend-handshake-timeout", 45, "timeout for exchanging handshake with backend")
 )
 
 func main() {
@@ -70,10 +74,9 @@ func main() {
 		cfg.API.Port = agent.DefaultAPIPort
 		cfg.CacheDir = os.DevNull
 		cfg.DisableAssets = true
-		cfg.Deregister = true
+		cfg.Deregister = bool(*flagDeregister)
 		cfg.DeregistrationHandler = ""
 		cfg.DisableAPI = true
-		cfg.DisableSockets = true
 		cfg.StatsdServer = &agent.StatsdServerConfig{
 			Disable:       true,
 			FlushInterval: 10,
@@ -82,8 +85,6 @@ func main() {
 		cfg.KeepaliveWarningTimeout = uint32(*flagKeepaliveTimeout)
 		cfg.Namespace = *flagNamespace
 		cfg.Password = *flagPassword
-		cfg.Socket.Host = agent.DefaultAPIHost
-		cfg.Socket.Port = agent.DefaultAPIPort
 		cfg.User = *flagUser
 		cfg.Subscriptions = subscriptions
 		cfg.AgentName = name
@@ -92,6 +93,8 @@ func main() {
 		cfg.BackendHeartbeatInterval = 30
 		cfg.BackendHeartbeatTimeout = 300
 		cfg.PrometheusBinding = *flagPromBinding
+		cfg.MaxSessionLength = *flagMaxSessionLength
+		cfg.BackendHandshakeTimeout = *flagHandshakeTimeout
 
 		agent, err := agent.NewAgent(cfg)
 		if err != nil {

@@ -5,10 +5,10 @@ import (
 	"reflect"
 	"testing"
 
-	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	corev2 "github.com/sensu/core/v2"
 	"github.com/sensu/sensu-go/backend/authorization"
 	"github.com/sensu/sensu-go/backend/authorization/rbac"
-	"github.com/sensu/sensu-go/backend/store"
+	storev2 "github.com/sensu/sensu-go/backend/store/v2"
 	"github.com/sensu/sensu-go/testing/mockstore"
 	"github.com/stretchr/testify/mock"
 )
@@ -19,7 +19,7 @@ func TestListRoles(t *testing.T) {
 	tests := []struct {
 		Name   string
 		Ctx    func() context.Context
-		Store  func() store.Store
+		Store  func() storev2.Interface
 		Auth   func() authorization.Authorizer
 		Exp    []*corev2.Role
 		ExpErr bool
@@ -27,8 +27,8 @@ func TestListRoles(t *testing.T) {
 		{
 			Name: "no auth",
 			Ctx:  defaultContext,
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -41,8 +41,8 @@ func TestListRoles(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -66,8 +66,8 @@ func TestListRoles(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -91,12 +91,13 @@ func TestListRoles(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "legit", nil)
 			},
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
-				store.On("ListResources", mock.Anything, (&corev2.Role{}).StorePrefix(), mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
-					arg := args.Get(2).(*[]*corev2.Role)
-					*arg = []*corev2.Role{defaultRole}
-				}).Return(nil)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
+				cs := new(mockstore.ConfigStore)
+				store.On("GetConfigStore").Return(cs)
+				req := storev2.NewResourceRequestFromResource(new(corev2.Role))
+				req.Namespace = "default"
+				cs.On("List", mock.Anything, req, mock.Anything).Return(mockstore.WrapList[*corev2.Role]{defaultRole}, nil)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -141,7 +142,7 @@ func TestGetRole(t *testing.T) {
 	tests := []struct {
 		Name   string
 		Ctx    func() context.Context
-		Store  func() store.Store
+		Store  func() storev2.Interface
 		Auth   func() authorization.Authorizer
 		Exp    *corev2.Role
 		ExpErr bool
@@ -149,8 +150,8 @@ func TestGetRole(t *testing.T) {
 		{
 			Name: "no auth",
 			Ctx:  defaultContext,
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -163,8 +164,8 @@ func TestGetRole(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -189,8 +190,8 @@ func TestGetRole(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -215,12 +216,11 @@ func TestGetRole(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "legit", nil)
 			},
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
-				store.On("GetResource", mock.Anything, "default", mock.Anything).Run(func(args mock.Arguments) {
-					arg := args.Get(2).(*corev2.Role)
-					*arg = *defaultRole
-				}).Return(nil)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
+				cs := new(mockstore.ConfigStore)
+				store.On("GetConfigStore").Return(cs)
+				cs.On("Get", mock.Anything, storev2.NewResourceRequestFromResource(defaultRole)).Return(mockstore.Wrapper[*corev2.Role]{Value: defaultRole}, nil)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -266,15 +266,15 @@ func TestCreateRole(t *testing.T) {
 	tests := []struct {
 		Name   string
 		Ctx    func() context.Context
-		Store  func() store.Store
+		Store  func() storev2.Interface
 		Auth   func() authorization.Authorizer
 		ExpErr bool
 	}{
 		{
 			Name: "no auth",
 			Ctx:  defaultContext,
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -287,8 +287,8 @@ func TestCreateRole(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -313,8 +313,8 @@ func TestCreateRole(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -339,9 +339,11 @@ func TestCreateRole(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "legit", nil)
 			},
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
-				store.On("CreateResource", mock.Anything, defaultRole).Return(nil)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
+				cs := new(mockstore.ConfigStore)
+				store.On("GetConfigStore").Return(cs)
+				cs.On("CreateIfNotExists", mock.Anything, mock.Anything, mock.Anything).Return(nil)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -383,15 +385,15 @@ func TestUpdateRole(t *testing.T) {
 	tests := []struct {
 		Name   string
 		Ctx    func() context.Context
-		Store  func() store.Store
+		Store  func() storev2.Interface
 		Auth   func() authorization.Authorizer
 		ExpErr bool
 	}{
 		{
 			Name: "no auth",
 			Ctx:  defaultContext,
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -404,8 +406,8 @@ func TestUpdateRole(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -430,8 +432,8 @@ func TestUpdateRole(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -456,9 +458,11 @@ func TestUpdateRole(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "legit", nil)
 			},
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
-				store.On("CreateOrUpdateResource", mock.Anything, defaultRole).Return(nil)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
+				cs := new(mockstore.ConfigStore)
+				store.On("GetConfigStore").Return(cs)
+				cs.On("CreateOrUpdate", mock.Anything, mock.Anything, mock.Anything).Return(nil)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -500,7 +504,7 @@ func TestDeleteRole(t *testing.T) {
 	tests := []struct {
 		Name   string
 		Ctx    func() context.Context
-		Store  func() store.Store
+		Store  func() storev2.Interface
 		Auth   func() authorization.Authorizer
 		Exp    *corev2.Role
 		ExpErr bool
@@ -508,8 +512,8 @@ func TestDeleteRole(t *testing.T) {
 		{
 			Name: "no auth",
 			Ctx:  defaultContext,
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -522,8 +526,8 @@ func TestDeleteRole(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -548,8 +552,8 @@ func TestDeleteRole(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -574,9 +578,11 @@ func TestDeleteRole(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "legit", nil)
 			},
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
-				store.On("DeleteResource", mock.Anything, "rbac/roles", "default").Return(nil)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
+				cs := new(mockstore.ConfigStore)
+				store.On("GetConfigStore").Return(cs)
+				cs.On("Delete", mock.Anything, mock.Anything).Return(nil)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -621,7 +627,7 @@ func TestListRoleBindings(t *testing.T) {
 	tests := []struct {
 		Name   string
 		Ctx    func() context.Context
-		Store  func() store.Store
+		Store  func() storev2.Interface
 		Auth   func() authorization.Authorizer
 		Exp    []*corev2.RoleBinding
 		ExpErr bool
@@ -629,8 +635,8 @@ func TestListRoleBindings(t *testing.T) {
 		{
 			Name: "no auth",
 			Ctx:  defaultContext,
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -643,8 +649,8 @@ func TestListRoleBindings(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -668,8 +674,8 @@ func TestListRoleBindings(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -693,12 +699,11 @@ func TestListRoleBindings(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "legit", nil)
 			},
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
-				store.On("ListResources", mock.Anything, (&corev2.RoleBinding{}).StorePrefix(), mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
-					arg := args.Get(2).(*[]*corev2.RoleBinding)
-					*arg = []*corev2.RoleBinding{defaultRoleBinding}
-				}).Return(nil)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
+				cs := new(mockstore.ConfigStore)
+				store.On("GetConfigStore").Return(cs)
+				cs.On("List", mock.Anything, mock.Anything, mock.Anything).Return(mockstore.WrapList[*corev2.RoleBinding]{defaultRoleBinding}, nil)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -743,7 +748,7 @@ func TestGetRoleBinding(t *testing.T) {
 	tests := []struct {
 		Name   string
 		Ctx    func() context.Context
-		Store  func() store.Store
+		Store  func() storev2.Interface
 		Auth   func() authorization.Authorizer
 		Exp    *corev2.RoleBinding
 		ExpErr bool
@@ -751,8 +756,8 @@ func TestGetRoleBinding(t *testing.T) {
 		{
 			Name: "no auth",
 			Ctx:  defaultContext,
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -765,8 +770,8 @@ func TestGetRoleBinding(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -791,8 +796,8 @@ func TestGetRoleBinding(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -817,12 +822,11 @@ func TestGetRoleBinding(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "legit", nil)
 			},
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
-				store.On("GetResource", mock.Anything, "default", mock.Anything).Run(func(args mock.Arguments) {
-					arg := args.Get(2).(*corev2.RoleBinding)
-					*arg = *defaultRoleBinding
-				}).Return(nil)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
+				cs := new(mockstore.ConfigStore)
+				store.On("GetConfigStore").Return(cs)
+				cs.On("Get", mock.Anything, storev2.NewResourceRequestFromResource(defaultRoleBinding)).Return(mockstore.Wrapper[*corev2.RoleBinding]{Value: defaultRoleBinding}, nil)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -868,15 +872,15 @@ func TestCreateRoleBinding(t *testing.T) {
 	tests := []struct {
 		Name   string
 		Ctx    func() context.Context
-		Store  func() store.Store
+		Store  func() storev2.Interface
 		Auth   func() authorization.Authorizer
 		ExpErr bool
 	}{
 		{
 			Name: "no auth",
 			Ctx:  defaultContext,
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -889,8 +893,8 @@ func TestCreateRoleBinding(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -915,8 +919,8 @@ func TestCreateRoleBinding(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -941,9 +945,11 @@ func TestCreateRoleBinding(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "legit", nil)
 			},
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
-				store.On("CreateResource", mock.Anything, defaultRoleBinding).Return(nil)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
+				cs := new(mockstore.ConfigStore)
+				store.On("GetConfigStore").Return(cs)
+				cs.On("CreateIfNotExists", mock.Anything, mock.Anything, mock.Anything).Return(nil)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -985,15 +991,15 @@ func TestUpdateRoleBinding(t *testing.T) {
 	tests := []struct {
 		Name   string
 		Ctx    func() context.Context
-		Store  func() store.Store
+		Store  func() storev2.Interface
 		Auth   func() authorization.Authorizer
 		ExpErr bool
 	}{
 		{
 			Name: "no auth",
 			Ctx:  defaultContext,
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -1006,8 +1012,8 @@ func TestUpdateRoleBinding(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -1032,8 +1038,8 @@ func TestUpdateRoleBinding(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -1058,9 +1064,11 @@ func TestUpdateRoleBinding(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "legit", nil)
 			},
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
-				store.On("CreateOrUpdateResource", mock.Anything, defaultRoleBinding).Return(nil)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
+				cs := new(mockstore.ConfigStore)
+				store.On("GetConfigStore").Return(cs)
+				cs.On("CreateOrUpdate", mock.Anything, mock.Anything, mock.Anything).Return(nil)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -1102,7 +1110,7 @@ func TestDeleteRoleBinding(t *testing.T) {
 	tests := []struct {
 		Name   string
 		Ctx    func() context.Context
-		Store  func() store.Store
+		Store  func() storev2.Interface
 		Auth   func() authorization.Authorizer
 		Exp    *corev2.RoleBinding
 		ExpErr bool
@@ -1110,8 +1118,8 @@ func TestDeleteRoleBinding(t *testing.T) {
 		{
 			Name: "no auth",
 			Ctx:  defaultContext,
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -1124,8 +1132,8 @@ func TestDeleteRoleBinding(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -1150,8 +1158,8 @@ func TestDeleteRoleBinding(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -1176,9 +1184,11 @@ func TestDeleteRoleBinding(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "legit", nil)
 			},
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
-				store.On("DeleteResource", mock.Anything, "rbac/rolebindings", "default").Return(nil)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
+				cs := new(mockstore.ConfigStore)
+				store.On("GetConfigStore").Return(cs)
+				cs.On("Delete", mock.Anything, mock.Anything).Return(nil)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -1223,7 +1233,7 @@ func TestListClusterRoles(t *testing.T) {
 	tests := []struct {
 		Name   string
 		Ctx    func() context.Context
-		Store  func() store.Store
+		Store  func() storev2.Interface
 		Auth   func() authorization.Authorizer
 		Exp    []*corev2.ClusterRole
 		ExpErr bool
@@ -1231,8 +1241,8 @@ func TestListClusterRoles(t *testing.T) {
 		{
 			Name: "no auth",
 			Ctx:  defaultContext,
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -1245,8 +1255,8 @@ func TestListClusterRoles(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -1270,8 +1280,8 @@ func TestListClusterRoles(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -1295,12 +1305,11 @@ func TestListClusterRoles(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "legit", nil)
 			},
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
-				store.On("ListResources", mock.Anything, (&corev2.ClusterRole{}).StorePrefix(), mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
-					arg := args.Get(2).(*[]*corev2.ClusterRole)
-					*arg = []*corev2.ClusterRole{defaultClusterRole}
-				}).Return(nil)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
+				cs := new(mockstore.ConfigStore)
+				store.On("GetConfigStore").Return(cs)
+				cs.On("List", mock.Anything, mock.Anything, mock.Anything).Return(mockstore.WrapList[*corev2.ClusterRole]{defaultClusterRole}, nil)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -1345,7 +1354,7 @@ func TestGetClusterRole(t *testing.T) {
 	tests := []struct {
 		Name   string
 		Ctx    func() context.Context
-		Store  func() store.Store
+		Store  func() storev2.Interface
 		Auth   func() authorization.Authorizer
 		Exp    *corev2.ClusterRole
 		ExpErr bool
@@ -1353,8 +1362,8 @@ func TestGetClusterRole(t *testing.T) {
 		{
 			Name: "no auth",
 			Ctx:  defaultContext,
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -1367,8 +1376,8 @@ func TestGetClusterRole(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -1393,8 +1402,8 @@ func TestGetClusterRole(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -1419,12 +1428,11 @@ func TestGetClusterRole(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "legit", nil)
 			},
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
-				store.On("GetResource", mock.Anything, "default", mock.Anything).Run(func(args mock.Arguments) {
-					arg := args.Get(2).(*corev2.ClusterRole)
-					*arg = *defaultClusterRole
-				}).Return(nil)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
+				cs := new(mockstore.ConfigStore)
+				store.On("GetConfigStore").Return(cs)
+				cs.On("Get", mock.Anything, storev2.NewResourceRequestFromResource(defaultClusterRole)).Return(mockstore.Wrapper[*corev2.ClusterRole]{Value: defaultClusterRole}, nil)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -1470,15 +1478,15 @@ func TestCreateClusterRole(t *testing.T) {
 	tests := []struct {
 		Name   string
 		Ctx    func() context.Context
-		Store  func() store.Store
+		Store  func() storev2.Interface
 		Auth   func() authorization.Authorizer
 		ExpErr bool
 	}{
 		{
 			Name: "no auth",
 			Ctx:  defaultContext,
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -1491,8 +1499,8 @@ func TestCreateClusterRole(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -1517,8 +1525,8 @@ func TestCreateClusterRole(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -1543,9 +1551,11 @@ func TestCreateClusterRole(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "legit", nil)
 			},
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
-				store.On("CreateResource", mock.Anything, defaultClusterRole).Return(nil)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
+				cs := new(mockstore.ConfigStore)
+				store.On("GetConfigStore").Return(cs)
+				cs.On("CreateIfNotExists", mock.Anything, mock.Anything, mock.Anything).Return(nil)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -1587,15 +1597,15 @@ func TestUpdateClusterRole(t *testing.T) {
 	tests := []struct {
 		Name   string
 		Ctx    func() context.Context
-		Store  func() store.Store
+		Store  func() storev2.Interface
 		Auth   func() authorization.Authorizer
 		ExpErr bool
 	}{
 		{
 			Name: "no auth",
 			Ctx:  defaultContext,
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -1608,8 +1618,8 @@ func TestUpdateClusterRole(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -1634,8 +1644,8 @@ func TestUpdateClusterRole(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -1660,9 +1670,11 @@ func TestUpdateClusterRole(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "legit", nil)
 			},
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
-				store.On("CreateOrUpdateResource", mock.Anything, defaultClusterRole).Return(nil)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
+				cs := new(mockstore.ConfigStore)
+				store.On("GetConfigStore").Return(cs)
+				cs.On("CreateOrUpdate", mock.Anything, mock.Anything, mock.Anything).Return(nil)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -1704,7 +1716,7 @@ func TestDeleteClusterRole(t *testing.T) {
 	tests := []struct {
 		Name   string
 		Ctx    func() context.Context
-		Store  func() store.Store
+		Store  func() storev2.Interface
 		Auth   func() authorization.Authorizer
 		Exp    *corev2.ClusterRole
 		ExpErr bool
@@ -1712,8 +1724,8 @@ func TestDeleteClusterRole(t *testing.T) {
 		{
 			Name: "no auth",
 			Ctx:  defaultContext,
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -1726,8 +1738,8 @@ func TestDeleteClusterRole(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -1752,8 +1764,8 @@ func TestDeleteClusterRole(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -1778,9 +1790,11 @@ func TestDeleteClusterRole(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "legit", nil)
 			},
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
-				store.On("DeleteResource", mock.Anything, "rbac/clusterroles", "default").Return(nil)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
+				cs := new(mockstore.ConfigStore)
+				store.On("GetConfigStore").Return(cs)
+				cs.On("Delete", mock.Anything, mock.Anything).Return(nil)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -1825,7 +1839,7 @@ func TestListClusterRoleBindings(t *testing.T) {
 	tests := []struct {
 		Name   string
 		Ctx    func() context.Context
-		Store  func() store.Store
+		Store  func() storev2.Interface
 		Auth   func() authorization.Authorizer
 		Exp    []*corev2.ClusterRoleBinding
 		ExpErr bool
@@ -1833,8 +1847,8 @@ func TestListClusterRoleBindings(t *testing.T) {
 		{
 			Name: "no auth",
 			Ctx:  defaultContext,
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -1847,8 +1861,8 @@ func TestListClusterRoleBindings(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -1872,8 +1886,8 @@ func TestListClusterRoleBindings(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -1897,12 +1911,11 @@ func TestListClusterRoleBindings(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "legit", nil)
 			},
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
-				store.On("ListResources", mock.Anything, (&corev2.ClusterRoleBinding{}).StorePrefix(), mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
-					arg := args.Get(2).(*[]*corev2.ClusterRoleBinding)
-					*arg = []*corev2.ClusterRoleBinding{defaultClusterRoleBinding}
-				}).Return(nil)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
+				cs := new(mockstore.ConfigStore)
+				store.On("GetConfigStore").Return(cs)
+				cs.On("List", mock.Anything, mock.Anything, mock.Anything).Return(mockstore.WrapList[*corev2.ClusterRoleBinding]{defaultClusterRoleBinding}, nil)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -1947,7 +1960,7 @@ func TestGetClusterRoleBinding(t *testing.T) {
 	tests := []struct {
 		Name   string
 		Ctx    func() context.Context
-		Store  func() store.Store
+		Store  func() storev2.Interface
 		Auth   func() authorization.Authorizer
 		Exp    *corev2.ClusterRoleBinding
 		ExpErr bool
@@ -1955,8 +1968,8 @@ func TestGetClusterRoleBinding(t *testing.T) {
 		{
 			Name: "no auth",
 			Ctx:  defaultContext,
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -1969,8 +1982,8 @@ func TestGetClusterRoleBinding(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -1995,8 +2008,8 @@ func TestGetClusterRoleBinding(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -2021,12 +2034,11 @@ func TestGetClusterRoleBinding(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "legit", nil)
 			},
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
-				store.On("GetResource", mock.Anything, "default", mock.Anything).Run(func(args mock.Arguments) {
-					arg := args.Get(2).(*corev2.ClusterRoleBinding)
-					*arg = *defaultClusterRoleBinding
-				}).Return(nil)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
+				cs := new(mockstore.ConfigStore)
+				store.On("GetConfigStore").Return(cs)
+				cs.On("Get", mock.Anything, storev2.NewResourceRequestFromResource(defaultClusterRoleBinding)).Return(mockstore.Wrapper[*corev2.ClusterRoleBinding]{Value: defaultClusterRoleBinding}, nil)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -2072,15 +2084,15 @@ func TestCreateClusterRoleBinding(t *testing.T) {
 	tests := []struct {
 		Name   string
 		Ctx    func() context.Context
-		Store  func() store.Store
+		Store  func() storev2.Interface
 		Auth   func() authorization.Authorizer
 		ExpErr bool
 	}{
 		{
 			Name: "no auth",
 			Ctx:  defaultContext,
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -2093,8 +2105,8 @@ func TestCreateClusterRoleBinding(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -2119,8 +2131,8 @@ func TestCreateClusterRoleBinding(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -2145,9 +2157,11 @@ func TestCreateClusterRoleBinding(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "legit", nil)
 			},
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
-				store.On("CreateResource", mock.Anything, defaultClusterRoleBinding).Return(nil)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
+				cs := new(mockstore.ConfigStore)
+				store.On("GetConfigStore").Return(cs)
+				cs.On("CreateIfNotExists", mock.Anything, mock.Anything, mock.Anything).Return(nil)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -2189,15 +2203,15 @@ func TestUpdateClusterRoleBinding(t *testing.T) {
 	tests := []struct {
 		Name   string
 		Ctx    func() context.Context
-		Store  func() store.Store
+		Store  func() storev2.Interface
 		Auth   func() authorization.Authorizer
 		ExpErr bool
 	}{
 		{
 			Name: "no auth",
 			Ctx:  defaultContext,
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -2210,8 +2224,8 @@ func TestUpdateClusterRoleBinding(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -2236,8 +2250,8 @@ func TestUpdateClusterRoleBinding(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -2262,9 +2276,11 @@ func TestUpdateClusterRoleBinding(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "legit", nil)
 			},
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
-				store.On("CreateOrUpdateResource", mock.Anything, defaultClusterRoleBinding).Return(nil)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
+				cs := new(mockstore.ConfigStore)
+				store.On("GetConfigStore").Return(cs)
+				cs.On("CreateOrUpdate", mock.Anything, mock.Anything, mock.Anything).Return(nil)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -2306,7 +2322,7 @@ func TestDeleteClusterRoleBinding(t *testing.T) {
 	tests := []struct {
 		Name   string
 		Ctx    func() context.Context
-		Store  func() store.Store
+		Store  func() storev2.Interface
 		Auth   func() authorization.Authorizer
 		Exp    *corev2.ClusterRoleBinding
 		ExpErr bool
@@ -2314,8 +2330,8 @@ func TestDeleteClusterRoleBinding(t *testing.T) {
 		{
 			Name: "no auth",
 			Ctx:  defaultContext,
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
@@ -2328,8 +2344,8 @@ func TestDeleteClusterRoleBinding(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -2354,8 +2370,8 @@ func TestDeleteClusterRoleBinding(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "haxor", nil)
 			},
-			Store: func() store.Store {
-				return new(mockstore.MockStore)
+			Store: func() storev2.Interface {
+				return new(mockstore.V2MockStore)
 			},
 			Auth: func() authorization.Authorizer {
 				auth := &mockAuth{
@@ -2380,9 +2396,11 @@ func TestDeleteClusterRoleBinding(t *testing.T) {
 			Ctx: func() context.Context {
 				return contextWithUser(defaultContext(), "legit", nil)
 			},
-			Store: func() store.Store {
-				store := new(mockstore.MockStore)
-				store.On("DeleteResource", mock.Anything, "rbac/clusterrolebindings", "default").Return(nil)
+			Store: func() storev2.Interface {
+				store := new(mockstore.V2MockStore)
+				cs := new(mockstore.ConfigStore)
+				store.On("GetConfigStore").Return(cs)
+				cs.On("Delete", mock.Anything, mock.Anything).Return(nil)
 				return store
 			},
 			Auth: func() authorization.Authorizer {
